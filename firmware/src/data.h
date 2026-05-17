@@ -25,13 +25,13 @@ struct SystemStats {
 };
 
 // Bitcoin price data pushed every ~60s by the daemon over USB.
-// price_history is a ring buffer of 48 hourly samples (last 2 days).
+// price_history is a ring buffer of 180 daily samples (last 6 months).
 struct BitcoinData {
     int price;      // current price in USD (integer)
     int price_24h_min;   // 24h low
     int price_24h_max;   // 24h high
     int price_24h_change_bps; // 24h change in basis points (0.01% units, e.g., 19 = 0.19%)
-    int price_history[48];  // hourly samples (oldest first), -1 means no data
-    int history_count;   // how many samples are valid (0-48)
+    int price_history[180];  // daily samples (oldest first), -1 means no data
+    int history_count;   // how many samples are valid (0-180)
     bool valid;     // false until first push received
 };

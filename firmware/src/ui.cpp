@@ -38,7 +38,7 @@ LV_FONT_DECLARE(font_mono_18);
 #define SCR_H         320
 #define MARGIN        12
 #define TITLE_Y       8
-#define CONTENT_Y     60
+#define CONTENT_Y     12  // Moved up to use title space; title is now hidden
 #define CONTENT_W     (SCR_W - 2 * MARGIN)   // 456
 
 // Two panels side by side under the title.
@@ -352,12 +352,12 @@ static void init_page_bitcoin(lv_obj_t* scr) {
     lv_obj_set_style_text_color(btc_change_label, COL_DIM, 0);
     lv_obj_align(btc_change_label, LV_ALIGN_RIGHT_MID, -8, 0);
 
-    // Chart: hourly history over 48h
+    // Chart: daily history over 6 months (180 days)
     btc_chart = lv_chart_create(page_bitcoin);
     lv_obj_set_pos(btc_chart, MARGIN, 62);
     lv_obj_set_size(btc_chart, CONTENT_W, 140);
     lv_chart_set_type(btc_chart, LV_CHART_TYPE_LINE);
-    lv_chart_set_point_count(btc_chart, 48);
+    lv_chart_set_point_count(btc_chart, 180);
     lv_chart_set_update_mode(btc_chart, LV_CHART_UPDATE_MODE_SHIFT);
     lv_obj_set_style_bg_color(btc_chart, COL_PANEL, 0);
     lv_obj_set_style_bg_opa(btc_chart, LV_OPA_COVER, 0);
@@ -365,7 +365,7 @@ static void init_page_bitcoin(lv_obj_t* scr) {
     lv_obj_set_style_pad_all(btc_chart, 8, 0);
     lv_obj_set_style_text_font(btc_chart, &font_styrene_12, LV_PART_MAIN);
     lv_obj_set_style_text_color(btc_chart, COL_DIM, 0);
-    lv_obj_set_style_line_width(btc_chart, 2, LV_PART_ITEMS);
+    lv_obj_set_style_line_width(btc_chart, 3, LV_PART_ITEMS);  // Increased line width for visibility
 
     btc_series = lv_chart_add_series(btc_chart, COL_ACCENT, LV_CHART_AXIS_PRIMARY_Y);
 }
@@ -584,7 +584,7 @@ void ui_update_bitcoin_data(const BitcoinData* data) {
     }
 
     // Append current price at the end if there's room.
-    if (data->history_count < 48) {
+    if (data->history_count < 180) {
         lv_chart_set_next_value(btc_chart, btc_series, data->price);
     }
 }
@@ -644,7 +644,7 @@ static const char* title_for_screen(screen_t s) {
 
 static void apply_chrome_visibility(bool show) {
     if (show) {
-        lv_obj_clear_flag(lbl_title, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lbl_title, LV_OBJ_FLAG_HIDDEN);  // Always hide title to save space
         for (int i = 0; i < 4; i++) lv_obj_clear_flag(nav_btns[i], LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(lbl_title, LV_OBJ_FLAG_HIDDEN);

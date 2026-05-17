@@ -9,7 +9,7 @@ DEVICE_PORT="${DEVICE_PORT:-}"     # e.g. /dev/ttyACM0; auto-detected if empty
 BAUD=115200
 POLL_INTERVAL=60
 SYS_PUSH_INTERVAL=2        # seconds between system-stats payloads
-BTC_POLL_INTERVAL=3600     # seconds between Bitcoin price fetches (hourly)
+BTC_POLL_INTERVAL=86400    # seconds between Bitcoin price fetches (daily)
 
 # Flag file the background reader touches when firmware asks for an immediate
 # poll (it emits {"req":"poll"} on boot until gauges arrive). The main loop
@@ -38,7 +38,7 @@ PREV_NET_TX=0
 PREV_NET_TIME_MS=0
 LAST_SYS_PUSH=0
 
-# Bitcoin price history: 48 hourly samples (ring buffer, 2 days of data)
+# Bitcoin price history: 180 daily samples (ring buffer, 6 months of data)
 declare -a BTC_HISTORY
 BTC_HISTORY_IDX=0
 BTC_CURRENT_PRICE=0
@@ -46,6 +46,7 @@ BTC_24H_MIN=0
 BTC_24H_MAX=0
 BTC_24H_CHANGE=0
 LAST_BTC_POLL=0
+LAST_BTC_DAY=0
 
 read_cpu_pct() {
     # /proc/stat first line: cpu user nice system idle iowait irq softirq steal ...
@@ -154,8 +155,13 @@ read_bitcoin_price() {
 
 push_bitcoin_if_due() {
     local now=$(date +%s)
-    (( now - LAST_BTC_POLL < BTC_POLL_INTERVAL )) && return 0
-    LAST_BTC_POLL=$now
+    local today=$(date +%Y%m%d)
+
+    # Only update daily (once per day at most)
+    if [ "$LAST_BTC_DAY" = "$today" ]; then
+        return 0
+    fi
+    LAST_BTC_DAY="$today"
 
     local price_change
     price_change=$(read_bitcoin_price) || { log "Bitcoin API call failed"; return 1; }
@@ -171,9 +177,9 @@ push_bitcoin_if_due() {
     BTC_CURRENT_PRICE=$price
     BTC_24H_CHANGE=$change24
 
-    # Maintain a ring buffer of 48 hourly samples.
+    # Maintain a ring buffer of 180 daily samples (6 months).
     BTC_HISTORY[$BTC_HISTORY_IDX]=$price
-    BTC_HISTORY_IDX=$(( (BTC_HISTORY_IDX + 1) % 48 ))
+    BTC_HISTORY_IDX=$(( (BTC_HISTORY_IDX + 1) % 180 ))
 
     # Track min/max over all collected samples.
     if [ $BTC_24H_MIN -eq 0 ] || [ $price -lt $BTC_24H_MIN ]; then
@@ -186,8 +192,8 @@ push_bitcoin_if_due() {
     # Build the history array as JSON: emit oldest-to-newest (ring buffer order).
     local hist_json="["
     local count=0
-    for i in {0..47}; do
-        local idx=$(( (BTC_HISTORY_IDX + i) % 48 ))
+    for i in {0..179}; do
+        local idx=$(( (BTC_HISTORY_IDX + i) % 180 ))
         if [ -n "${BTC_HISTORY[$idx]}" ] && [ "${BTC_HISTORY[$idx]}" -gt 0 ]; then
             [ $count -gt 0 ] && hist_json="$hist_json,"
             hist_json="$hist_json${BTC_HISTORY[$idx]}"
@@ -200,7 +206,7 @@ push_bitcoin_if_due() {
     payload=$(printf '{"btc":{"price":%d,"min24":%d,"max24":%d,"change24":%d,"history":%s}}' \
         "$BTC_CURRENT_PRICE" "$BTC_24H_MIN" "$BTC_24H_MAX" "$BTC_24H_CHANGE" "$hist_json")
 
-    log "Bitcoin: \$$BTC_CURRENT_PRICE (24h: $BTC_24H_CHANGE)"
+    log "Bitcoin: \$$BTC_CURRENT_PRICE (24h: $BTC_24H_CHANGE), history: $count days"
     send_line "$payload" || return 1
 }
 
