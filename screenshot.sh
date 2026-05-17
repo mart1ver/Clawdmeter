@@ -5,7 +5,9 @@
 OUTPUT="${1:-screenshot.png}"
 PORT="${2:-/dev/ttyACM0}"
 
-TMPRAW=$(mktemp /tmp/screenshot_XXXXXX.raw)
+# Snap-packaged ffmpeg can't read /tmp or hidden files in $HOME — keep raw
+# in a regular file under $HOME.
+TMPRAW=$(mktemp "$HOME/screenshot_XXXXXX.raw")
 trap "rm -f '$TMPRAW'" EXIT
 
 echo "Taking screenshot from $PORT..."
@@ -55,7 +57,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-ffmpeg -y -f rawvideo -pixel_format rgb565le -video_size 480x480 \
+ffmpeg -y -f rawvideo -pixel_format rgb565le -video_size 480x320 \
     -i "$TMPRAW" -update 1 -frames:v 1 "$OUTPUT" 2>/dev/null || true
 
 

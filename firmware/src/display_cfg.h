@@ -1,37 +1,37 @@
 #pragma once
 
 #include <Arduino_GFX_Library.h>
-#include <TouchDrvCSTXXX.hpp>
-#include <XPowersLib.h>
-#include <SensorQMI8658.hpp>
+#include <FT6X36.h>
 #include <Wire.h>
 
-// ---- Display resolution ----
+// ---- Display resolution (Panlee SC01 Plus, 3.5" IPS, landscape) ----
 #define LCD_WIDTH   480
-#define LCD_HEIGHT  480
+#define LCD_HEIGHT  320
 
-// ---- QSPI display pins (CO5300) ----
-#define LCD_CS      12
-#define LCD_SCLK    38
-#define LCD_SDIO0   4
-#define LCD_SDIO1   5
-#define LCD_SDIO2   6
-#define LCD_SDIO3   7
-#define LCD_RESET   2
+// ---- ST7796 8-bit parallel display pins (SC01 Plus) ----
+#define LCD_BL      45
+#define LCD_RST     4
+#define LCD_CS      GFX_NOT_DEFINED   // CS tied low on the board
+#define LCD_DC      0
+#define LCD_WR      47
+#define LCD_RD      GFX_NOT_DEFINED
+#define LCD_D0      9
+#define LCD_D1      46
+#define LCD_D2      3
+#define LCD_D3      8
+#define LCD_D4      18
+#define LCD_D5      17
+#define LCD_D6      16
+#define LCD_D7      15
 
-// ---- Touch pins (CST9220 via I2C) ----
-#define IIC_SDA     15
-#define IIC_SCL     14
-#define TP_INT      11
-#define TP_RST      2    // shared with LCD_RESET
-#define CST9220_ADDR 0x5A
-
-// ---- PMU (AXP2101 via same I2C) ----
-#define AXP2101_ADDR 0x34
+// ---- Touch pins (FT6336U via I2C, SC01 Plus) ----
+#define IIC_SDA     6
+#define IIC_SCL     5
+#define TP_INT      7
+#define TP_RST      -1                // tied on the board
+#define FT6336_ADDR 0x38
 
 // ---- Global hardware objects (defined in main.cpp) ----
 extern Arduino_DataBus *bus;
-extern Arduino_CO5300 *gfx;
-extern TouchDrvCST92xx touch;
-extern XPowersPMU pmu;
-extern SensorQMI8658 imu;
+extern Arduino_ST7796  *gfx;
+extern FT6X36          touch;

@@ -4,53 +4,61 @@
 #include "display_cfg.h"
 #include "data.h"
 #include "ui.h"
-#include "ble.h"
 #include "power.h"
 #include "imu.h"
 #include "splash.h"
 #include "usage_rate.h"
 
-// Physical buttons (global, screen-independent):
-//   BTN_BACK   (GPIO 0)  — left,  send Space (Claude Code voice mode push-to-talk)
-//   BTN_FWD    (GPIO 18) — right, send Shift+Tab (Claude Code mode toggle)
-//   AXP PWR    (PMU)     — middle, cycle screens; on splash, cycle animations
-#define BTN_BACK 0
-#define BTN_FWD  18
+// Panlee SC01 Plus: no physical buttons, full-touch UI. Usage data arrives
+// over USB serial (see process_usb_json below) — no BLE on this build.
 
 // ---- Hardware objects ----
-Arduino_DataBus *bus = new Arduino_ESP32QSPI(
-    LCD_CS, LCD_SCLK, LCD_SDIO0, LCD_SDIO1, LCD_SDIO2, LCD_SDIO3);
-Arduino_CO5300 *gfx = new Arduino_CO5300(
-    bus, LCD_RESET, 0 /* rotation */,
-    LCD_WIDTH, LCD_HEIGHT, 0, 0, 0, 0);
-TouchDrvCST92xx touch;
-XPowersPMU pmu;
-SensorQMI8658 imu;
+Arduino_DataBus *bus = new Arduino_ESP32LCD8(
+    LCD_DC, LCD_CS, LCD_WR, LCD_RD,
+    LCD_D0, LCD_D1, LCD_D2, LCD_D3,
+    LCD_D4, LCD_D5, LCD_D6, LCD_D7);
+Arduino_ST7796 *gfx = new Arduino_ST7796(
+    bus, LCD_RST, 3 /* rotation = landscape 480x320, flipped 180° */,
+    true /* IPS */);
+FT6X36 touch(&Wire, TP_INT);
 
 static UsageData usage = {};
 
-// ---- Touch interrupt + shared state ----
+// Flipped to true as soon as the daemon sends at least one gauge value (the
+// "s" field). Used to drive the boot-time poll-request retry loop in loop().
+static bool gauges_received = false;
+
+// ---- Touch shared state ----
+// FT6X36 driver registers a callback; we just latch the latest point and
+// release-state into shared variables that LVGL's indev read polls.
 static volatile bool     touch_pressed = false;
 static volatile uint16_t touch_x = 0;
 static volatile uint16_t touch_y = 0;
-static volatile bool     touch_data_ready = false;
 
-static void IRAM_ATTR touch_isr(void) {
-    touch_data_ready = true;
+// FT6336 reports raw coords in the panel's native portrait orientation
+// (320 wide × 480 tall). We render landscape (480 × 320, gfx rotation = 3,
+// flipped 180° from rotation=1). Touch transform mirrors the display flip.
+static inline void map_touch(int16_t raw_x, int16_t raw_y) {
+    touch_x = (uint16_t)(LCD_WIDTH  - 1 - raw_y);
+    touch_y = (uint16_t)raw_x;
 }
 
-static void touch_read() {
-    if (!touch_data_ready) return;
-    touch_data_ready = false;
-
-    int16_t tx[5], ty[5];
-    uint8_t n = touch.getPoint(tx, ty, touch.getSupportTouchPoint());
-    if (n > 0) {
+static void touch_event_cb(TPoint p, TEvent e) {
+    switch (e) {
+    case TEvent::Tap:
+    case TEvent::TouchStart:
+    case TEvent::TouchMove:
+    case TEvent::DragStart:
+    case TEvent::DragMove:
+        map_touch(p.x, p.y);
         touch_pressed = true;
-        touch_x = (uint16_t)tx[0];
-        touch_y = (uint16_t)ty[0];
-    } else {
+        break;
+    case TEvent::TouchEnd:
+    case TEvent::DragEnd:
         touch_pressed = false;
+        break;
+    default:
+        break;
     }
 }
 
@@ -58,89 +66,18 @@ static void touch_read() {
 #define BUF_LINES 40
 static uint16_t *buf1 = nullptr;
 static uint16_t *buf2 = nullptr;
-// rot_buf for strip rotation — max size is 480×480 (full invalidation case)
-// but typical partial strips are much smaller
-static uint16_t *rot_buf = nullptr;
 
 // LVGL tick callback
 static uint32_t my_tick(void) {
     return millis();
 }
 
-// Rotate a w×h strip and compute destination coordinates on the 480×480 display.
-// src pixels are in row-major order for the rectangle (sx, sy, w, h).
-// Output goes to rot_buf in row-major order for the destination rectangle.
-static void rotate_strip(const uint16_t *src, int32_t w, int32_t h,
-                         int32_t sx, int32_t sy, uint8_t r,
-                         int32_t *dx, int32_t *dy, int32_t *dw, int32_t *dh) {
-    const int S = LCD_WIDTH;  // 480
-
-    switch (r) {
-    case 1: { // 90° CW: (x,y) -> (S-1-y, x)
-        *dw = h; *dh = w;
-        *dx = S - sy - h;
-        *dy = sx;
-        for (int32_t y = 0; y < h; y++) {
-            for (int32_t x = 0; x < w; x++) {
-                // src(x,y) -> dst(h-1-y, x)
-                rot_buf[x * h + (h - 1 - y)] = src[y * w + x];
-            }
-        }
-        break;
-    }
-    case 2: { // 180°: (x,y) -> (S-1-x, S-1-y)
-        *dw = w; *dh = h;
-        *dx = S - sx - w;
-        *dy = S - sy - h;
-        for (int32_t y = 0; y < h; y++) {
-            for (int32_t x = 0; x < w; x++) {
-                rot_buf[(h - 1 - y) * w + (w - 1 - x)] = src[y * w + x];
-            }
-        }
-        break;
-    }
-    case 3: { // 270° CW: (x,y) -> (y, S-1-x)
-        *dw = h; *dh = w;
-        *dx = sy;
-        *dy = S - sx - w;
-        for (int32_t y = 0; y < h; y++) {
-            for (int32_t x = 0; x < w; x++) {
-                // src(x,y) -> dst(y, w-1-x)
-                rot_buf[(w - 1 - x) * h + y] = src[y * w + x];
-            }
-        }
-        break;
-    }
-    default:
-        *dx = sx; *dy = sy; *dw = w; *dh = h;
-        break;
-    }
-}
-
-// LVGL flush callback — rotates partial strips and writes to display
+// LVGL flush callback — straight blit, ST7796 handles rotation in hardware
 static void my_flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
     int32_t w = area->x2 - area->x1 + 1;
     int32_t h = area->y2 - area->y1 + 1;
-    uint16_t *src = (uint16_t*)px_map;
-    uint8_t r = imu_get_rotation();
-
-    if (r == 0) {
-        gfx->draw16bitRGBBitmap(area->x1, area->y1, src, w, h);
-    } else {
-        int32_t dx, dy, dw, dh;
-        rotate_strip(src, w, h, area->x1, area->y1, r, &dx, &dy, &dw, &dh);
-        gfx->draw16bitRGBBitmap(dx, dy, rot_buf, dw, dh);
-    }
+    gfx->draw16bitRGBBitmap(area->x1, area->y1, (uint16_t*)px_map, w, h);
     lv_display_flush_ready(disp);
-}
-
-// CO5300 requires even-aligned flush regions
-static void rounder_cb(lv_event_t* e) {
-    lv_area_t *area = (lv_area_t*)lv_event_get_param(e);
-    area->x1 = area->x1 & ~1;
-    area->y1 = area->y1 & ~1;
-    area->x2 = area->x2 | 1;
-    area->y2 = area->y2 | 1;
 }
 
 // LVGL touch callback
@@ -163,18 +100,26 @@ static bool parse_json(const char* json, UsageData* out) {
         return false;
     }
 
-    out->session_pct = doc["s"] | 0.0f;
-    out->session_reset_mins = doc["sr"] | -1;
-    out->weekly_pct = doc["w"] | 0.0f;
-    out->weekly_reset_mins = doc["wr"] | -1;
-    strlcpy(out->status, doc["st"] | "unknown", sizeof(out->status));
-    out->ok = doc["ok"] | false;
+    // Only overwrite fields actually present in the JSON. This lets the
+    // daemon send a partial payload like {"m":"haiku"} for an instant model
+    // refresh without zeroing the gauges between API polls.
+    if (!doc["s"].isNull()) {
+        out->session_pct = doc["s"].as<float>();
+        gauges_received = true;
+    }
+    if (!doc["sr"].isNull()) out->session_reset_mins = doc["sr"].as<int>();
+    if (!doc["w"].isNull())  out->weekly_pct         = doc["w"].as<float>();
+    if (!doc["wr"].isNull()) out->weekly_reset_mins  = doc["wr"].as<int>();
+    if (!doc["st"].isNull()) strlcpy(out->status, doc["st"], sizeof(out->status));
+    if (!doc["m"].isNull())  strlcpy(out->model,  doc["m"],  sizeof(out->model));
+    if (!doc["ok"].isNull()) out->ok                 = doc["ok"].as<bool>();
     out->valid = true;
     return true;
 }
 
-// Serial command buffer
-#define CMD_BUF_SIZE 64
+// Serial command buffer — big enough for the full JSON usage payload
+// (worst case ~70 bytes) plus a safety margin.
+#define CMD_BUF_SIZE 256
 static char cmd_buf[CMD_BUF_SIZE];
 static int cmd_pos = 0;
 
@@ -208,13 +153,30 @@ static void send_screenshot() {
     heap_caps_free(sbuf);
 }
 
+// Lines starting with '{' are JSON usage payloads from the USB daemon —
+// same schema as the BLE RX characteristic. We feed them through the same
+// pipeline so the UI behaves identically across transports.
+static void process_usb_json(const char* line) {
+    if (parse_json(line, &usage)) {
+        int g_before = usage_rate_group();
+        usage_rate_sample(usage.session_pct);
+        int g_after = usage_rate_group();
+        if (g_after != g_before && splash_is_active()) splash_pick_for_current_rate();
+        ui_update(&usage);
+        Serial.println("{\"ack\":true}");
+    } else {
+        Serial.println("{\"err\":true}");
+    }
+}
+
 static void check_serial_cmd() {
     while (Serial.available()) {
         char c = Serial.read();
         if (c == '\n' || c == '\r') {
             cmd_buf[cmd_pos] = '\0';
-            if (strcmp(cmd_buf, "screenshot") == 0) {
-                send_screenshot();
+            if (cmd_pos > 0) {
+                if (cmd_buf[0] == '{')                       process_usb_json(cmd_buf);
+                else if (strcmp(cmd_buf, "screenshot") == 0) send_screenshot();
             }
             cmd_pos = 0;
         } else if (cmd_pos < CMD_BUF_SIZE - 1) {
@@ -228,42 +190,28 @@ void setup() {
     delay(300);
     Serial.println("{\"ready\":true}");
 
-    // Init I2C (shared by touch + PMU)
+    // Backlight on (active high on SC01 Plus)
+    pinMode(LCD_BL, OUTPUT);
+    digitalWrite(LCD_BL, HIGH);
+
+    // Init I2C (shared by touch)
     Wire.begin(IIC_SDA, IIC_SCL);
 
     // Init display
     gfx->begin();
     gfx->fillScreen(0x0000);
-    gfx->setBrightness(200);
 
-    // Init PMU
-    power_init();
-
-    // Init IMU (accelerometer for auto-rotation)
-    imu_init();
-
-    // Init touch
-    touch.setPins(TP_RST, TP_INT);
-    if (!touch.begin(Wire, CST9220_ADDR, IIC_SDA, IIC_SCL)) {
-        Serial.println("Touch init failed");
-    } else {
-        touch.setMaxCoordinates(LCD_WIDTH, LCD_HEIGHT);
-        touch.setSwapXY(true);
-        touch.setMirrorXY(true, false);
-        attachInterrupt(TP_INT, touch_isr, FALLING);
-        Serial.println("Touch init OK");
-    }
+    // Init touch (FT6336U)
+    touch.begin();
+    touch.registerTouchHandler(touch_event_cb);
 
     // Init LVGL
     lv_init();
     lv_tick_set_cb(my_tick);
 
-    // Allocate PSRAM-backed partial render buffers
+    // PSRAM-backed partial render buffers
     buf1 = (uint16_t*)heap_caps_malloc(LCD_WIDTH * BUF_LINES * 2, MALLOC_CAP_SPIRAM);
     buf2 = (uint16_t*)heap_caps_malloc(LCD_WIDTH * BUF_LINES * 2, MALLOC_CAP_SPIRAM);
-    // rot_buf needs to hold the largest possible strip after rotation
-    // A 480×40 strip rotated 90° becomes 40×480, same pixel count
-    rot_buf = (uint16_t*)heap_caps_malloc(LCD_WIDTH * BUF_LINES * 2, MALLOC_CAP_SPIRAM);
 
     lv_display_t* disp = lv_display_create(LCD_WIDTH, LCD_HEIGHT);
     lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
@@ -271,138 +219,49 @@ void setup() {
     lv_display_set_buffers(disp, buf1, buf2, LCD_WIDTH * BUF_LINES * 2,
                            LV_DISPLAY_RENDER_MODE_PARTIAL);
 
-    // CO5300 even-alignment rounder
-    lv_display_add_event_cb(disp, rounder_cb, LV_EVENT_INVALIDATE_AREA, NULL);
-
     lv_indev_t* indev = lv_indev_create();
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(indev, my_touch_cb);
 
-    // Init BLE data channel
-    ble_init();
-
-    // Physical buttons: back (GPIO 0) and forward (GPIO 18)
-    pinMode(BTN_BACK, INPUT_PULLUP);
-    pinMode(BTN_FWD,  INPUT_PULLUP);
+    // Stubbed on SC01 Plus (no PMU, no IMU) but still called for symmetry.
+    power_init();
+    imu_init();
 
     // Build dashboard
     ui_init();
 
-    // Show initial BLE status on Bluetooth screen
-    ui_update_ble_status(ble_get_state(), ble_get_device_name(), ble_get_mac_address());
-
-    // Show initial battery status
+    // Battery hidden by ui_update_battery when percent < 0
     ui_update_battery(power_battery_pct(), power_is_charging());
 
     ui_show_screen(SCREEN_SPLASH);
 
-    Serial.println("Dashboard ready, waiting for data on BLE...");
-}
-
-static ble_state_t last_ble_state = BLE_STATE_INIT;
-
-// Brightness ramp state for rotation transition
-// On rotation change we blank the panel, force a full LVGL redraw at the
-// new orientation, then ramp brightness back up over ~125ms so the
-// transition reads as deliberate instead of as a glitch.
-static void handle_rotation_change(void) {
-    static uint8_t last_rotation = 0;
-    static uint8_t  ramp_step = 0;  // 0=idle, 1-4=ramping
-    static uint32_t ramp_last = 0;
-
-    uint8_t rot = imu_get_rotation();
-    if (rot != last_rotation) {
-        gfx->setBrightness(0);
-        last_rotation = rot;
-        lv_obj_invalidate(lv_screen_active());
-        ramp_step = 1;
-        return;
-    }
-
-    if (ramp_step == 0) return;
-    uint32_t now = millis();
-    if (now - ramp_last < 25) return;
-    ramp_last = now;
-
-    static const uint8_t levels[] = {60, 120, 170, 200};
-    gfx->setBrightness(levels[ramp_step - 1]);
-    if (ramp_step >= 4) ramp_step = 0;
-    else                ramp_step++;
+    Serial.println("Dashboard ready, waiting for USB JSON...");
 }
 
 void loop() {
-    touch_read();
+    touch.loop();
     lv_timer_handler();
     ui_tick_anim();
-    ble_tick();
-    power_tick();
-    imu_tick();
     splash_tick();
 
-    // Three-button input (global, screen-independent):
-    //   LEFT  (GPIO 0)  → Space (voice-mode push-to-talk; press & release tracked)
-    //   RIGHT (GPIO 18) → Shift+Tab (Claude Code mode toggle)
-    //   PWR   (AXP)     → cycle screens; on splash, cycle animations
-    {
-        static bool back_was = false, fwd_was = false;
-        bool back_now = (digitalRead(BTN_BACK) == LOW);
-        bool fwd_now  = (digitalRead(BTN_FWD)  == LOW);
-
-        if (back_now != back_was) {
-            if (back_now) ble_keyboard_press(0x2C, 0);  // HID Space, no mods
-            else          ble_keyboard_release();
-            back_was = back_now;
-        }
-        if (fwd_now != fwd_was) {
-            if (fwd_now) ble_keyboard_press(0x2B, 0x02);  // HID Tab + LEFT_SHIFT
-            else         ble_keyboard_release();
-            fwd_was = fwd_now;
-        }
-
-        if (power_pwr_pressed()) {
-            if (ui_get_current_screen() == SCREEN_SPLASH) splash_next();
-            else                                          ui_cycle_screen();
-        }
-    }
-
-    handle_rotation_change();
-
-    // Update BLE status on screen when state changes
-    ble_state_t bs = ble_get_state();
-    if (bs != last_ble_state) {
-        last_ble_state = bs;
-        ui_update_ble_status(bs, ble_get_device_name(), ble_get_mac_address());
-    }
-
-    // Update battery indicator
-    static int last_pct = -2;
-    static bool last_charging = false;
-    int pct = power_battery_pct();
-    bool charging = power_is_charging();
-    if (pct != last_pct || charging != last_charging) {
-        last_pct = pct;
-        last_charging = charging;
-        ui_update_battery(pct, charging);
-    }
-
-    // Check for serial commands (screenshot, etc.)
+    // USB serial commands: 'screenshot' and {...} JSON usage payloads.
     check_serial_cmd();
 
-    // Process incoming BLE data
-    if (ble_has_data()) {
-        if (parse_json(ble_get_data(), &usage)) {
-            int g_before = usage_rate_group();
-            usage_rate_sample(usage.session_pct);
-            int g_after = usage_rate_group();
-            if (g_after != g_before) {
-                Serial.printf("usage rate: group %d -> %d (s=%.2f%%)\n",
-                    g_before, g_after, usage.session_pct);
-                if (splash_is_active()) splash_pick_for_current_rate();
-            }
-            ui_update(&usage);
-            ble_send_ack();
-        } else {
-            ble_send_nack();
+    // Ask the daemon for an immediate poll while the gauges are still "---".
+    // Default daemon poll cadence is 60s — without this kick a fresh boot or
+    // reflash would sit with empty gauges for up to a minute. Send right
+    // away, retry every 3s, give up after ~1 minute to avoid spamming if no
+    // one is listening.
+    static uint32_t last_req_ms = 0;
+    static int req_count = 0;
+    static bool initial_req = true;
+    if (!gauges_received && req_count < 20) {
+        uint32_t now = millis();
+        if (initial_req || (now - last_req_ms) >= 3000) {
+            Serial.println("{\"req\":\"poll\"}");
+            last_req_ms = now;
+            req_count++;
+            initial_req = false;
         }
     }
 

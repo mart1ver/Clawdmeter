@@ -2,13 +2,15 @@
 #include "splash_animations.h"
 #include "theme.h"
 #include "usage_rate.h"
+#include "display_cfg.h"   // LCD_WIDTH / LCD_HEIGHT
 #include <Arduino.h>
 #include <string.h>
 #include <esp_heap_caps.h>
 
-// 20x20 grid scaled 24x to fill 480x480
+// 20x20 grid. Largest integer cell size that fits 480x320 is 16 (→ 320x320,
+// centered horizontally on the 480-wide panel).
 #define GRID         20
-#define CELL         24
+#define CELL         16
 #define CANVAS_W     (GRID * CELL)
 #define CANVAS_H     (GRID * CELL)
 
@@ -99,7 +101,7 @@ void splash_init(lv_obj_t *parent) {
     }
 
     splash_container = lv_obj_create(parent);
-    lv_obj_set_size(splash_container, 480, 480);
+    lv_obj_set_size(splash_container, LCD_WIDTH, LCD_HEIGHT);
     lv_obj_set_pos(splash_container, 0, 0);
     lv_obj_set_style_bg_color(splash_container, THEME_BG, 0);
     lv_obj_set_style_bg_opa(splash_container, LV_OPA_COVER, 0);
