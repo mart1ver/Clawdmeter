@@ -159,7 +159,7 @@ static bool parse_json(const char* json, UsageData* out) {
 
 // Serial command buffer — big enough for the full JSON usage payload
 // (worst case ~70 bytes) plus a safety margin.
-#define CMD_BUF_SIZE 256
+#define CMD_BUF_SIZE 4096   // Big enough for Bitcoin payload (180 prices ~1200 bytes)
 static char cmd_buf[CMD_BUF_SIZE];
 static int cmd_pos = 0;
 

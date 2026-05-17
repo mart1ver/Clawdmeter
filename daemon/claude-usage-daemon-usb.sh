@@ -197,7 +197,11 @@ init_bitcoin_history() {
 
         BTC_HISTORY_IDX=$count
         if [ $count -gt 0 ]; then
-            log "Bitcoin: loaded $count days from cache (min: \$$BTC_24H_MIN, max: \$$BTC_24H_MAX)"
+            # Set current price as the last (most recent) price in the history
+            if [ -n "${BTC_HISTORY[$((count-1))]}" ]; then
+                BTC_CURRENT_PRICE=${BTC_HISTORY[$((count-1))]}
+            fi
+            log "Bitcoin: loaded $count days from cache (min: \$$BTC_24H_MIN, max: \$$BTC_24H_MAX, current: \$$BTC_CURRENT_PRICE)"
             return 0
         fi
     fi
@@ -232,7 +236,11 @@ init_bitcoin_history() {
     }
 
     BTC_HISTORY_IDX=$count
-    log "Bitcoin: loaded $count days from API (min: \$$BTC_24H_MIN, max: \$$BTC_24H_MAX)"
+    # Set current price as the last (most recent) price
+    if [ $count -gt 0 ] && [ -n "${BTC_HISTORY[$((count-1))]}" ]; then
+        BTC_CURRENT_PRICE=${BTC_HISTORY[$((count-1))]}
+    fi
+    log "Bitcoin: loaded $count days from API (min: \$$BTC_24H_MIN, max: \$$BTC_24H_MAX, current: \$$BTC_CURRENT_PRICE)"
     return 0
 }
 
@@ -246,30 +254,37 @@ push_bitcoin_if_due() {
     fi
     LAST_BTC_DAY="$today"
 
-    local price_change
-    price_change=$(read_bitcoin_price) || { log "Bitcoin API call failed"; return 1; }
-
-    local price change24
-    read -r price change24 <<< "$price_change"
-
-    if [ -z "$price" ] || [ "$price" -eq 0 ]; then
-        log "Failed to parse Bitcoin price"
-        return 1
+    # On first run, use current price from cache initialization
+    # On subsequent days, try to fetch new price (but don't fail if API is rate-limited)
+    if [ $BTC_CURRENT_PRICE -eq 0 ]; then
+        # First run: use price 0 as signal to just send history
+        log "Bitcoin: sending initial history data"
+    else
+        # Daily update: try to fetch new price
+        local price_change
+        price_change=$(read_bitcoin_price) 2>/dev/null
+        if [ -n "$price_change" ]; then
+            local price change24
+            read -r price change24 <<< "$price_change"
+            if [ -n "$price" ] && [ "$price" -gt 0 ]; then
+                BTC_CURRENT_PRICE=$price
+                BTC_24H_CHANGE=$change24
+            fi
+        fi
     fi
 
-    BTC_CURRENT_PRICE=$price
-    BTC_24H_CHANGE=$change24
+    # Update ring buffer with today's price if we have a new one
+    if [ $BTC_CURRENT_PRICE -gt 0 ]; then
+        BTC_HISTORY[$BTC_HISTORY_IDX]=$BTC_CURRENT_PRICE
+        BTC_HISTORY_IDX=$(( (BTC_HISTORY_IDX + 1) % 180 ))
 
-    # Maintain a ring buffer of 180 daily samples (6 months).
-    BTC_HISTORY[$BTC_HISTORY_IDX]=$price
-    BTC_HISTORY_IDX=$(( (BTC_HISTORY_IDX + 1) % 180 ))
-
-    # Track min/max over all collected samples.
-    if [ $BTC_24H_MIN -eq 0 ] || [ $price -lt $BTC_24H_MIN ]; then
-        BTC_24H_MIN=$price
-    fi
-    if [ $price -gt $BTC_24H_MAX ]; then
-        BTC_24H_MAX=$price
+        # Track min/max over all collected samples.
+        if [ $BTC_24H_MIN -eq 0 ] || [ $BTC_CURRENT_PRICE -lt $BTC_24H_MIN ]; then
+            BTC_24H_MIN=$BTC_CURRENT_PRICE
+        fi
+        if [ $BTC_CURRENT_PRICE -gt $BTC_24H_MAX ]; then
+            BTC_24H_MAX=$BTC_CURRENT_PRICE
+        fi
     fi
 
     # Build the history array as JSON: emit oldest-to-newest (ring buffer order).
