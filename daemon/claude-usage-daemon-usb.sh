@@ -47,6 +47,7 @@ BTC_24H_MAX=0
 BTC_24H_CHANGE=0
 LAST_BTC_POLL=0
 LAST_BTC_DAY=0
+BTC_CACHE_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/claude-btc-history.json"
 
 read_cpu_pct() {
     # /proc/stat first line: cpu user nice system idle iowait irq softirq steal ...
@@ -132,7 +133,7 @@ read_net_kbps() {
 }
 
 read_bitcoin_price() {
-    # Fetch Bitcoin price from CoinGecko API (free, no auth required).
+    # Fetch Bitcoin current price from CoinGecko API (free, no auth required).
     # Returns: price change24_bps (price in USD; change24_bps as basis points, e.g., 19 for 0.19%)
     local json
     json=$(curl -s "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_market_cap=false&include_24hr_vol=false&include_24hr_change=true&include_market_cap_change_24h=false" 2>/dev/null) || return 1
@@ -151,6 +152,88 @@ read_bitcoin_price() {
     [ -z "$change24_pct" ] && change24_pct=0
 
     echo "$price" "$change24_pct"
+}
+
+read_bitcoin_history() {
+    # Fetch Bitcoin daily prices for the last 180 days.
+    # Returns one price per line (oldest first).
+    local json
+    json=$(curl -s "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=180&interval=daily" 2>/dev/null) || return 1
+
+    # Extract from "prices":[ array using sed, then parse [timestamp,price] pairs
+    # Each pair looks like: [1234567890000,95000.123]
+    # We want just the price (second number)
+    echo "$json" | sed 's/"prices":\[\[//' | sed 's/\]\],"market_caps".*//' | \
+    grep -o '\[[0-9]*,[0-9]*\.[0-9]*\]' | \
+    sed 's/\[[0-9]*,\([0-9]*\)\.[0-9]*\]/\1/'
+}
+
+init_bitcoin_history() {
+    # One-time initialization: load 180 days of history from cache or API.
+
+    # Try loading from cache first
+    if [ -f "$BTC_CACHE_FILE" ]; then
+        log "Bitcoin: loading history from cache..."
+        local count=0
+        while IFS= read -r price; do
+            if [ -z "$price" ] || [ "$price" -eq 0 ]; then
+                continue
+            fi
+            BTC_HISTORY[$count]=$price
+
+            # Track min/max.
+            if [ $BTC_24H_MIN -eq 0 ] || [ $price -lt $BTC_24H_MIN ]; then
+                BTC_24H_MIN=$price
+            fi
+            if [ $price -gt $BTC_24H_MAX ]; then
+                BTC_24H_MAX=$price
+            fi
+
+            (( count++ ))
+            if [ $count -ge 180 ]; then
+                break
+            fi
+        done < "$BTC_CACHE_FILE"
+
+        BTC_HISTORY_IDX=$count
+        if [ $count -gt 0 ]; then
+            log "Bitcoin: loaded $count days from cache (min: \$$BTC_24H_MIN, max: \$$BTC_24H_MAX)"
+            return 0
+        fi
+    fi
+
+    # Cache miss or empty: fetch from API
+    log "Bitcoin: fetching 180 days of history from API..."
+    local prices
+    prices=$(read_bitcoin_history) || { log "Bitcoin history fetch failed"; return 1; }
+
+    local count=0
+    {
+        while IFS= read -r price; do
+            if [ -z "$price" ] || [ "$price" -eq 0 ]; then
+                continue
+            fi
+            BTC_HISTORY[$count]=$price
+            echo "$price" >> "$BTC_CACHE_FILE"
+
+            # Track min/max.
+            if [ $BTC_24H_MIN -eq 0 ] || [ $price -lt $BTC_24H_MIN ]; then
+                BTC_24H_MIN=$price
+            fi
+            if [ $price -gt $BTC_24H_MAX ]; then
+                BTC_24H_MAX=$price
+            fi
+
+            (( count++ ))
+            if [ $count -ge 180 ]; then
+                break
+            fi
+        done <<< "$prices"
+    }
+
+    BTC_HISTORY_IDX=$count
+    log "Bitcoin: loaded $count days from API (min: \$$BTC_24H_MIN, max: \$$BTC_24H_MAX)"
+    return 0
 }
 
 push_bitcoin_if_due() {
@@ -379,6 +462,7 @@ TICK=2                  # inner-loop cadence for model watcher
 LAST_API_POLL=0
 LAST_MODEL_MTIME=0
 LAST_MODEL=""
+BTC_HISTORY_INIT=0      # Flag: have we fetched 180 days of Bitcoin history?
 
 # Push a tiny partial JSON when the user runs /model in Claude Code. The
 # firmware treats missing fields as "keep previous value" so this leaves the
@@ -417,6 +501,11 @@ while true; do
         # Force re-push of model on reconnect.
         LAST_MODEL_MTIME=0
         LAST_MODEL=""
+        # Initialize Bitcoin history once at startup.
+        if [ $BTC_HISTORY_INIT -eq 0 ]; then
+            init_bitcoin_history
+            BTC_HISTORY_INIT=1
+        fi
     fi
 
     # Reader process is what relays firmware → host requests; if it died
