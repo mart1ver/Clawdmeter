@@ -26,3 +26,19 @@ bool splash_is_active(void);
 
 // Root container (so ui.cpp can attach a click event).
 lv_obj_t* splash_get_root(void);
+
+// ---- Animation-data accessors -----------------------------------------
+// Used by the bottom-nav Claude thumbnail so we don't have to include the
+// 180 KB splash_animations.h in a second translation unit. The static const
+// data lives only in splash.cpp.
+
+int splash_anim_count(void);
+int splash_anim_frame_count(int anim_idx);
+uint16_t splash_anim_hold(int anim_idx, int frame_idx);
+int splash_find_anim_by_name(const char *name);
+
+// Render one frame into a pre-allocated RGB565 buffer at cell_size scale.
+// dst is (20 * cell_size) px wide and tall; bg replaces palette index 0
+// (the animation's transparent background).
+void splash_render_thumb(uint16_t *dst, int cell_size,
+                         int anim_idx, int frame_idx, uint16_t bg);

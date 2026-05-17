@@ -4,7 +4,7 @@ Description=Claude Usage Tracker Daemon (USB)
 [Service]
 Type=simple
 ExecStart=DAEMON_PATH
-Restart=on-failure
+Restart=always
 RestartSec=5
 
 [Install]

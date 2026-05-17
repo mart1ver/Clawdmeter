@@ -4,6 +4,9 @@
 enum screen_t {
     SCREEN_SPLASH,
     SCREEN_USAGE,
+    SCREEN_SYSTEM,
+    SCREEN_BITCOIN,
+    SCREEN_ACTIONS,
     SCREEN_COUNT,
 };
 

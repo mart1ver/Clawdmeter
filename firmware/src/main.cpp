@@ -239,7 +239,12 @@ void setup() {
 }
 
 void loop() {
-    touch.loop();
+    // touch.loop() only fires when the FT6336U INT pin pulled a falling edge
+    // and the ISR caught it — the driver is interrupt-only. In practice the
+    // short INT pulses get missed and taps go ignored. Poll the controller
+    // directly each iteration: processTouch() is a no-op cost when nothing's
+    // touching and gives reliable taps when there is.
+    touch.processTouch();
     lv_timer_handler();
     ui_tick_anim();
     splash_tick();

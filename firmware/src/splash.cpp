@@ -203,3 +203,51 @@ void splash_hide(void) {
 lv_obj_t* splash_get_root(void) {
     return splash_container;
 }
+
+// ---- Animation-data accessors (used by clawd_thumb) ------------------
+
+int splash_anim_count(void) { return SPLASH_ANIM_COUNT; }
+
+int splash_anim_frame_count(int idx) {
+    if (idx < 0 || idx >= SPLASH_ANIM_COUNT) return 0;
+    return splash_anims[idx].frame_count;
+}
+
+uint16_t splash_anim_hold(int idx, int frame) {
+    if (idx < 0 || idx >= SPLASH_ANIM_COUNT) return 0;
+    if (frame < 0 || frame >= splash_anims[idx].frame_count) return 0;
+    return splash_anims[idx].holds[frame];
+}
+
+int splash_find_anim_by_name(const char *name) {
+    if (!name) return -1;
+    for (int i = 0; i < SPLASH_ANIM_COUNT; i++) {
+        if (strcmp(splash_anims[i].name, name) == 0) return i;
+    }
+    return -1;
+}
+
+void splash_render_thumb(uint16_t *dst, int cell, int idx, int frame, uint16_t bg) {
+    if (!dst) return;
+    if (idx < 0 || idx >= SPLASH_ANIM_COUNT) return;
+    const splash_anim_def_t *a = &splash_anims[idx];
+    if (frame < 0 || frame >= a->frame_count) return;
+
+    const int W = GRID * cell;
+    const uint8_t *cells = a->frames[frame];
+    for (int gy = 0; gy < GRID; gy++) {
+        for (int gx = 0; gx < GRID; gx++) {
+            uint8_t code = cells[gy * GRID + gx];
+            // Palette index 0 is the animation's own background colour
+            // (true black in every Clawd palette). Swap it for the caller's
+            // bg so the thumbnail blends into the button.
+            uint16_t color = (code == 0 || code >= SPLASH_PALETTE_SIZE)
+                                 ? bg
+                                 : a->palette[code];
+            for (int dy = 0; dy < cell; dy++) {
+                uint16_t *row = &dst[(gy * cell + dy) * W + gx * cell];
+                for (int dx = 0; dx < cell; dx++) row[dx] = color;
+            }
+        }
+    }
+}

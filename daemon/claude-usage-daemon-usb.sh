@@ -53,7 +53,10 @@ detect_port() {
 # would re-open the CDC endpoint and the ESP32-S3 resets on (some) opens,
 # bouncing through boot every poll.
 configure_port() {
-    stty -F "$DEVICE_PORT" "$BAUD" raw -echo -echoe -echok -echoctl -echoke -hupcl 2>/dev/null
+    # clocal: ignore modem control lines. Without it the kernel sends SIGHUP
+    # to every process holding the TTY open the moment the cable is pulled,
+    # which (combined with bash's default SIGHUP behaviour) kills the daemon.
+    stty -F "$DEVICE_PORT" "$BAUD" raw clocal -echo -echoe -echok -echoctl -echoke -hupcl 2>/dev/null
     # Read+write on one FD: opening twice would pulse DTR a second time and
     # reset the ESP32. The background reader inherits FD 3 with <&3 instead
     # of reopening the device.
@@ -159,6 +162,10 @@ cleanup() {
     exit 0
 }
 
+# Belt-and-suspenders: clocal in configure_port should prevent SIGHUP from
+# ever being delivered, but ignore it explicitly in case stty doesn't take
+# effect (e.g. on the very first iteration before the port has been opened).
+trap '' HUP
 trap cleanup INT TERM
 
 log "=== Claude Usage Tracker Daemon (USB) ==="
