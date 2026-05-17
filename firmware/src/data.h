@@ -11,3 +11,27 @@ struct UsageData {
     bool ok;                 // data parse succeeded
     bool valid;              // false until first successful parse
 };
+
+// Host system telemetry pushed every ~2s by the daemon over USB.
+// All percentages are 0-100; -1 means "not available".
+struct SystemStats {
+    int cpu;        // %
+    int ram;        // %
+    int disk;       // % of root filesystem
+    int temp;       // CPU temperature in °C
+    int gpu;        // %, -1 if no GPU driver detected
+    int net;        // combined RX+TX in KB/s
+    bool valid;     // false until first push received
+};
+
+// Bitcoin price data pushed every ~60s by the daemon over USB.
+// price_history is a ring buffer of 48 hourly samples (last 2 days).
+struct BitcoinData {
+    int price;      // current price in USD (integer)
+    int price_24h_min;   // 24h low
+    int price_24h_max;   // 24h high
+    int price_24h_change_bps; // 24h change in basis points (0.01% units, e.g., 19 = 0.19%)
+    int price_history[48];  // hourly samples (oldest first), -1 means no data
+    int history_count;   // how many samples are valid (0-48)
+    bool valid;     // false until first push received
+};

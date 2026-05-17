@@ -12,6 +12,8 @@ enum screen_t {
 
 void ui_init(void);
 void ui_update(const UsageData* data);
+void ui_update_system_stats(const SystemStats* stats);
+void ui_update_bitcoin_data(const BitcoinData* data);
 void ui_tick_anim(void);
 void ui_show_screen(screen_t screen);
 void ui_toggle_splash(void);

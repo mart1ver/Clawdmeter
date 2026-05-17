@@ -9,6 +9,7 @@
 // Fonts available in this build. SC01 Plus is 165 PPI so the smaller
 // pre-compiled sizes are right; the 1.9x-scaled set used on the 2.16"
 // AMOLED is too large for 480x320.
+LV_FONT_DECLARE(font_tiempos_28);
 LV_FONT_DECLARE(font_tiempos_34);
 LV_FONT_DECLARE(font_tiempos_56);
 LV_FONT_DECLARE(font_styrene_48);
@@ -74,6 +75,19 @@ static lv_obj_t* bar_weekly;
 static lv_obj_t* lbl_weekly_pct;
 static lv_obj_t* lbl_weekly_label;
 static lv_obj_t* lbl_weekly_reset;
+
+// ---- System page widgets (2 cols x 3 rows) ----
+typedef struct {
+    lv_obj_t* value;
+    lv_obj_t* bar;
+} sys_cell_t;
+static sys_cell_t sc_cpu, sc_ram, sc_disk, sc_temp, sc_gpu, sc_net;
+
+// ---- Bitcoin page widgets ----
+static lv_obj_t* btc_price_label;
+static lv_obj_t* btc_change_label;
+static lv_obj_t* btc_chart;
+static lv_chart_series_t* btc_series;
 
 // ---- Battery indicator + logo (kept for API symmetry; PMU is stubbed) ----
 static lv_obj_t* battery_img;
@@ -257,7 +271,106 @@ static void init_page_usage(lv_obj_t* scr) {
                      &bar_weekly, &lbl_weekly_reset);
 }
 
-// Shared placeholder helper for system / bitcoin / actions pages.
+// ---- System page (live host telemetry pushed by the daemon) ----
+
+#define SYS_CELL_W    222
+#define SYS_CELL_H    50
+#define SYS_CELL_GAP  12
+
+static void make_sys_cell(lv_obj_t* parent, int x, int y,
+                          const char* name, sys_cell_t* out) {
+    lv_obj_t* card = lv_obj_create(parent);
+    lv_obj_set_pos(card, x, y);
+    lv_obj_set_size(card, SYS_CELL_W, SYS_CELL_H);
+    lv_obj_set_style_bg_color(card, COL_PANEL, 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, 8, 0);
+    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_pad_left(card, 10, 0);
+    lv_obj_set_style_pad_right(card, 10, 0);
+    lv_obj_set_style_pad_top(card, 6, 0);
+    lv_obj_set_style_pad_bottom(card, 8, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    lv_obj_t* lbl_name = lv_label_create(card);
+    lv_label_set_text(lbl_name, name);
+    lv_obj_set_style_text_font(lbl_name, &font_styrene_16, 0);
+    lv_obj_set_style_text_color(lbl_name, COL_DIM, 0);
+    lv_obj_align(lbl_name, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    out->value = lv_label_create(card);
+    lv_label_set_text(out->value, "---");
+    lv_obj_set_style_text_font(out->value, &font_styrene_16, 0);
+    lv_obj_set_style_text_color(out->value, COL_TEXT, 0);
+    lv_obj_align(out->value, LV_ALIGN_TOP_RIGHT, 0, 0);
+
+    out->bar = lv_bar_create(card);
+    lv_obj_set_size(out->bar, SYS_CELL_W - 20, 6);
+    lv_obj_align(out->bar, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_bar_set_range(out->bar, 0, 100);
+    lv_bar_set_value(out->bar, 0, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(out->bar, COL_BAR_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(out->bar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(out->bar, 3, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(out->bar, COL_GREEN, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(out->bar, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(out->bar, 3, LV_PART_INDICATOR);
+}
+
+static void init_page_system(lv_obj_t* scr) {
+    page_system = make_page(scr);
+    int x_left = MARGIN;
+    int x_right = MARGIN + SYS_CELL_W + SYS_CELL_GAP;
+    int row = SYS_CELL_H + SYS_CELL_GAP;
+
+    make_sys_cell(page_system, x_left,  0 * row, "CPU",    &sc_cpu);
+    make_sys_cell(page_system, x_right, 0 * row, "RAM",    &sc_ram);
+    make_sys_cell(page_system, x_left,  1 * row, "Disque", &sc_disk);
+    make_sys_cell(page_system, x_right, 1 * row, "Temp",   &sc_temp);
+    make_sys_cell(page_system, x_left,  2 * row, "GPU",    &sc_gpu);
+    make_sys_cell(page_system, x_right, 2 * row, "R\xC3\xA9seau", &sc_net);
+}
+
+// ---- Bitcoin page (price chart) ----
+
+static void init_page_bitcoin(lv_obj_t* scr) {
+    page_bitcoin = make_page(scr);
+
+    // Top section: price + 24h change
+    lv_obj_t* price_panel = make_panel(page_bitcoin, MARGIN, 0, CONTENT_W, 50);
+
+    btc_price_label = lv_label_create(price_panel);
+    lv_label_set_text(btc_price_label, "$-----");
+    lv_obj_set_style_text_font(btc_price_label, &font_styrene_28, 0);
+    lv_obj_set_style_text_color(btc_price_label, COL_TEXT, 0);
+    lv_obj_align(btc_price_label, LV_ALIGN_LEFT_MID, 8, 0);
+
+    btc_change_label = lv_label_create(price_panel);
+    lv_label_set_text(btc_change_label, "24h: ---");
+    lv_obj_set_style_text_font(btc_change_label, &font_styrene_20, 0);
+    lv_obj_set_style_text_color(btc_change_label, COL_DIM, 0);
+    lv_obj_align(btc_change_label, LV_ALIGN_RIGHT_MID, -8, 0);
+
+    // Chart: hourly history over 48h
+    btc_chart = lv_chart_create(page_bitcoin);
+    lv_obj_set_pos(btc_chart, MARGIN, 62);
+    lv_obj_set_size(btc_chart, CONTENT_W, 140);
+    lv_chart_set_type(btc_chart, LV_CHART_TYPE_LINE);
+    lv_chart_set_point_count(btc_chart, 48);
+    lv_chart_set_update_mode(btc_chart, LV_CHART_UPDATE_MODE_SHIFT);
+    lv_obj_set_style_bg_color(btc_chart, COL_PANEL, 0);
+    lv_obj_set_style_bg_opa(btc_chart, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(btc_chart, 0, 0);
+    lv_obj_set_style_pad_all(btc_chart, 8, 0);
+    lv_obj_set_style_text_font(btc_chart, &font_styrene_12, LV_PART_MAIN);
+    lv_obj_set_style_text_color(btc_chart, COL_DIM, 0);
+    lv_obj_set_style_line_width(btc_chart, 2, LV_PART_ITEMS);
+
+    btc_series = lv_chart_add_series(btc_chart, COL_ACCENT, LV_CHART_AXIS_PRIMARY_Y);
+}
+
+// Shared placeholder helper for the still-unbuilt pages (actions).
 static void init_placeholder_page(lv_obj_t** out_page, lv_obj_t* scr, const char* text) {
     *out_page = make_page(scr);
     lv_obj_t* lbl = lv_label_create(*out_page);
@@ -272,7 +385,7 @@ static void init_placeholder_page(lv_obj_t** out_page, lv_obj_t* scr, const char
 static void init_chrome(lv_obj_t* scr) {
     lbl_title = lv_label_create(scr);
     lv_label_set_text(lbl_title, "Claude usage");
-    lv_obj_set_style_text_font(lbl_title, &font_tiempos_34, 0);
+    lv_obj_set_style_text_font(lbl_title, &font_tiempos_28, 0);
     lv_obj_set_style_text_color(lbl_title, COL_TEXT, 0);
     lv_obj_align(lbl_title, LV_ALIGN_TOP_MID, 0, TITLE_Y);
 
@@ -310,8 +423,8 @@ void ui_init(void) {
     init_nav_icons();
 
     init_page_usage(scr);
-    init_placeholder_page(&page_system,  scr, "\xC3\x80 venir");
-    init_placeholder_page(&page_bitcoin, scr, "\xC3\x80 venir");
+    init_page_system(scr);
+    init_page_bitcoin(scr);
     init_placeholder_page(&page_actions, scr, "\xC3\x80 venir");
 
     splash_init(scr);
@@ -363,6 +476,116 @@ void ui_update(const UsageData* data) {
         if (current_screen == SCREEN_USAGE) {
             lv_obj_clear_flag(lbl_model, LV_OBJ_FLAG_HIDDEN);
         }
+    }
+}
+
+static lv_color_t temp_color(int t) {
+    if (t >= 80) return COL_RED;
+    if (t >= 65) return COL_AMBER;
+    return COL_GREEN;
+}
+
+static void set_cell(sys_cell_t* c, const char* value_str, int bar_pct, lv_color_t color) {
+    lv_label_set_text(c->value, value_str);
+    if (bar_pct < 0) bar_pct = 0;
+    if (bar_pct > 100) bar_pct = 100;
+    lv_bar_set_value(c->bar, bar_pct, LV_ANIM_ON);
+    lv_obj_set_style_bg_color(c->bar, color, LV_PART_INDICATOR);
+}
+
+void ui_update_system_stats(const SystemStats* s) {
+    if (!s || !s->valid) return;
+    char buf[16];
+
+    snprintf(buf, sizeof(buf), "%d%%", s->cpu);
+    set_cell(&sc_cpu, buf, s->cpu, pct_color(s->cpu));
+
+    snprintf(buf, sizeof(buf), "%d%%", s->ram);
+    set_cell(&sc_ram, buf, s->ram, pct_color(s->ram));
+
+    snprintf(buf, sizeof(buf), "%d%%", s->disk);
+    set_cell(&sc_disk, buf, s->disk, pct_color(s->disk));
+
+    snprintf(buf, sizeof(buf), "%d\xC2\xB0""C", s->temp);   // "<n>°C"
+    set_cell(&sc_temp, buf, s->temp, temp_color(s->temp));
+
+    if (s->gpu < 0) {
+        set_cell(&sc_gpu, "N/A", 0, COL_DIM);
+    } else {
+        snprintf(buf, sizeof(buf), "%d%%", s->gpu);
+        set_cell(&sc_gpu, buf, s->gpu, pct_color(s->gpu));
+    }
+
+    // Net is in KB/s. Show as KB/s under 1 MB/s, else MB/s with one decimal.
+    // Bar caps at 5 MB/s — past that we're saturating most home links anyway.
+    if (s->net < 1024) {
+        snprintf(buf, sizeof(buf), "%d KB/s", s->net);
+    } else {
+        snprintf(buf, sizeof(buf), "%d.%d MB/s", s->net / 1024, (s->net % 1024) / 102);
+    }
+    int net_pct = (int)((long)s->net * 100 / 5120);   // 5120 KB/s = 5 MB/s
+    set_cell(&sc_net, buf, net_pct, COL_ACCENT);
+}
+
+void ui_update_bitcoin_data(const BitcoinData* data) {
+    if (!data || !data->valid) return;
+
+    char buf[48];
+    snprintf(buf, sizeof(buf), "$%d", data->price);
+    lv_label_set_text(btc_price_label, buf);
+
+    lv_color_t change_color = COL_DIM;
+    int change_bps = data->price_24h_change_bps;
+    if (change_bps > 0) {
+        change_color = COL_GREEN;
+        snprintf(buf, sizeof(buf), "24h: +%d.%02d%%", change_bps / 100, change_bps % 100);
+    } else if (change_bps < 0) {
+        change_color = COL_RED;
+        snprintf(buf, sizeof(buf), "24h: %d.%02d%%", change_bps / 100, (-change_bps) % 100);
+    } else {
+        snprintf(buf, sizeof(buf), "24h: 0.00%%");
+    }
+    lv_label_set_text(btc_change_label, buf);
+    lv_obj_set_style_text_color(btc_change_label, change_color, 0);
+
+    // Update chart: find min/max to scale the Y axis.
+    // Initialize with current price if no history.
+    int min_price = data->price;
+    int max_price = data->price;
+    for (int i = 0; i < data->history_count; i++) {
+        if (data->price_history[i] > 0) {
+            if (data->price_history[i] < min_price) min_price = data->price_history[i];
+            if (data->price_history[i] > max_price) max_price = data->price_history[i];
+        }
+    }
+
+    // Use 24h min/max if available (likely covers a wider range than recent samples).
+    if (data->price_24h_min > 0 && data->price_24h_min < min_price) min_price = data->price_24h_min;
+    if (data->price_24h_max > max_price) max_price = data->price_24h_max;
+
+    // Add 5% padding to the range for visual breathing room.
+    int range = max_price - min_price;
+    if (range == 0) range = 1;  // Avoid divide-by-zero if all prices are identical.
+    int padding = range / 20;
+    min_price -= padding;
+    max_price += padding;
+
+    lv_chart_set_range(btc_chart, LV_CHART_AXIS_PRIMARY_Y, min_price, max_price);
+
+    // Populate the chart with history data.
+    // Clear old data by re-allocating the series points.
+    lv_chart_remove_series(btc_chart, btc_series);
+    btc_series = lv_chart_add_series(btc_chart, COL_ACCENT, LV_CHART_AXIS_PRIMARY_Y);
+
+    for (int i = 0; i < data->history_count; i++) {
+        if (data->price_history[i] > 0) {
+            lv_chart_set_next_value(btc_chart, btc_series, data->price_history[i]);
+        }
+    }
+
+    // Append current price at the end if there's room.
+    if (data->history_count < 48) {
+        lv_chart_set_next_value(btc_chart, btc_series, data->price);
     }
 }
 

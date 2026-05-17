@@ -8,6 +8,7 @@
 #include "imu.h"
 #include "splash.h"
 #include "usage_rate.h"
+#include <cstring>
 
 // Panlee SC01 Plus: no physical buttons, full-touch UI. Usage data arrives
 // over USB serial (see process_usb_json below) — no BLE on this build.
@@ -23,6 +24,8 @@ Arduino_ST7796 *gfx = new Arduino_ST7796(
 FT6X36 touch(&Wire, TP_INT);
 
 static UsageData usage = {};
+static SystemStats sys_stats = {};
+static BitcoinData btc_data = {};
 
 // Flipped to true as soon as the daemon sends at least one gauge value (the
 // "s" field). Used to drive the boot-time poll-request retry loop in loop().
@@ -113,6 +116,43 @@ static bool parse_json(const char* json, UsageData* out) {
     if (!doc["st"].isNull()) strlcpy(out->status, doc["st"], sizeof(out->status));
     if (!doc["m"].isNull())  strlcpy(out->model,  doc["m"],  sizeof(out->model));
     if (!doc["ok"].isNull()) out->ok                 = doc["ok"].as<bool>();
+
+    // System telemetry (nested "sys" object). Daemon pushes this every ~2s
+    // independently of the usage poll cadence — most payloads will carry
+    // sys but no usage fields, which is fine: we just update what's present.
+    if (!doc["sys"].isNull()) {
+        JsonObject s = doc["sys"].as<JsonObject>();
+        if (!s["cpu"].isNull())  sys_stats.cpu  = s["cpu"].as<int>();
+        if (!s["ram"].isNull())  sys_stats.ram  = s["ram"].as<int>();
+        if (!s["disk"].isNull()) sys_stats.disk = s["disk"].as<int>();
+        if (!s["temp"].isNull()) sys_stats.temp = s["temp"].as<int>();
+        if (!s["gpu"].isNull())  sys_stats.gpu  = s["gpu"].as<int>();
+        if (!s["net"].isNull())  sys_stats.net  = s["net"].as<int>();
+        sys_stats.valid = true;
+        ui_update_system_stats(&sys_stats);
+    }
+
+    // Bitcoin price data (nested "btc" object). Daemon pushes this every ~60s.
+    if (!doc["btc"].isNull()) {
+        JsonObject b = doc["btc"].as<JsonObject>();
+        if (!b["price"].isNull())   btc_data.price = b["price"].as<int>();
+        if (!b["min24"].isNull())   btc_data.price_24h_min = b["min24"].as<int>();
+        if (!b["max24"].isNull())   btc_data.price_24h_max = b["max24"].as<int>();
+        if (!b["change24"].isNull()) btc_data.price_24h_change_bps = b["change24"].as<int>();
+
+        if (!b["history"].isNull()) {
+            JsonArray hist = b["history"].as<JsonArray>();
+            btc_data.history_count = 0;
+            for (JsonVariant v : hist) {
+                if (btc_data.history_count >= 48) break;
+                btc_data.price_history[btc_data.history_count++] = v.as<int>();
+            }
+        }
+
+        btc_data.valid = true;
+        ui_update_bitcoin_data(&btc_data);
+    }
+
     out->valid = true;
     return true;
 }

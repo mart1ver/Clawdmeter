@@ -8,6 +8,8 @@
 DEVICE_PORT="${DEVICE_PORT:-}"     # e.g. /dev/ttyACM0; auto-detected if empty
 BAUD=115200
 POLL_INTERVAL=60
+SYS_PUSH_INTERVAL=2        # seconds between system-stats payloads
+BTC_POLL_INTERVAL=3600     # seconds between Bitcoin price fetches (hourly)
 
 # Flag file the background reader touches when firmware asks for an immediate
 # poll (it emits {"req":"poll"} on boot until gauges arrive). The main loop
@@ -21,6 +23,201 @@ log() {
 
 read_token() {
     grep -o '"accessToken":"[^"]*"' "$HOME/.claude/.credentials.json" | cut -d'"' -f4
+}
+
+# ---- Host system telemetry --------------------------------------------
+# Collects cpu / ram / disk / temp / gpu / net every SYS_PUSH_INTERVAL
+# seconds and ships them to the firmware as a "sys" sub-object. Most calls
+# use deltas, so the first reading after boot returns 0 and the second is
+# the first useful sample.
+
+PREV_CPU_TOTAL=0
+PREV_CPU_IDLE=0
+PREV_NET_RX=0
+PREV_NET_TX=0
+PREV_NET_TIME_MS=0
+LAST_SYS_PUSH=0
+
+# Bitcoin price history: 48 hourly samples (ring buffer, 2 days of data)
+declare -a BTC_HISTORY
+BTC_HISTORY_IDX=0
+BTC_CURRENT_PRICE=0
+BTC_24H_MIN=0
+BTC_24H_MAX=0
+BTC_24H_CHANGE=0
+LAST_BTC_POLL=0
+
+read_cpu_pct() {
+    # /proc/stat first line: cpu user nice system idle iowait irq softirq steal ...
+    local f1 f2 f3 f4 f5 f6 f7 f8 total idle d_total d_idle pct
+    read -r _ f1 f2 f3 f4 f5 f6 f7 f8 _ < /proc/stat
+    idle=$(( f4 + f5 ))               # idle + iowait
+    total=$(( f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 ))
+    d_total=$(( total - PREV_CPU_TOTAL ))
+    d_idle=$(( idle  - PREV_CPU_IDLE  ))
+    PREV_CPU_TOTAL=$total
+    PREV_CPU_IDLE=$idle
+    if (( d_total <= 0 )); then echo 0; return; fi
+    pct=$(( ( (d_total - d_idle) * 100 ) / d_total ))
+    (( pct < 0 )) && pct=0
+    (( pct > 100 )) && pct=100
+    echo "$pct"
+}
+
+read_ram_pct() {
+    local total avail
+    total=$(awk '/^MemTotal:/  {print $2; exit}' /proc/meminfo)
+    avail=$(awk '/^MemAvailable:/ {print $2; exit}' /proc/meminfo)
+    [ -z "$total" ] || [ "$total" -le 0 ] && { echo 0; return; }
+    echo $(( ( (total - avail) * 100 ) / total ))
+}
+
+read_disk_pct() {
+    df --output=pcent / 2>/dev/null | awk 'NR==2 {gsub(/[ %]/,""); print}'
+}
+
+read_temp_c() {
+    # Prefer a thermal zone whose type matches a CPU package sensor;
+    # fall back to thermal_zone0 which is typically the ACPI CPU zone.
+    local zone type t
+    for zone in /sys/class/thermal/thermal_zone*; do
+        [ -r "$zone/type" ] || continue
+        type=$(cat "$zone/type" 2>/dev/null)
+        case "$type" in
+            *x86_pkg_temp*|*coretemp*|*cpu*|*k10temp*)
+                t=$(cat "$zone/temp" 2>/dev/null)
+                [ -n "$t" ] && { echo $(( t / 1000 )); return; }
+                ;;
+        esac
+    done
+    t=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
+    if [ -n "$t" ]; then echo $(( t / 1000 )); else echo 0; fi
+}
+
+read_gpu_pct() {
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        local v
+        v=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
+        [ -n "$v" ] && { echo "$v"; return; }
+    fi
+    local c
+    for c in /sys/class/drm/card*/device/gpu_busy_percent; do
+        [ -r "$c" ] || continue
+        cat "$c" 2>/dev/null && return
+    done
+    echo -1
+}
+
+read_net_kbps() {
+    # Sum bytes RX (col 2) + TX (col 10) across every iface except lo.
+    local rx tx now_ms d_t d_rx d_tx
+    read -r rx tx < <(awk -F'[: ]+' '
+        /^[[:space:]]*lo:/ { next }
+        /:/ { sum_rx += $3; sum_tx += $11 }
+        END { print sum_rx+0, sum_tx+0 }
+    ' /proc/net/dev)
+    now_ms=$(date +%s%3N)
+    if (( PREV_NET_TIME_MS == 0 )); then
+        PREV_NET_RX=$rx; PREV_NET_TX=$tx; PREV_NET_TIME_MS=$now_ms
+        echo 0; return
+    fi
+    d_t=$(( now_ms - PREV_NET_TIME_MS ))
+    (( d_t <= 0 )) && { echo 0; return; }
+    d_rx=$(( rx - PREV_NET_RX ))
+    d_tx=$(( tx - PREV_NET_TX ))
+    PREV_NET_RX=$rx; PREV_NET_TX=$tx; PREV_NET_TIME_MS=$now_ms
+    # KB/s = (bytes / 1024) * (1000 / ms)
+    echo $(( ( (d_rx + d_tx) * 1000 ) / (1024 * d_t) ))
+}
+
+read_bitcoin_price() {
+    # Fetch Bitcoin price from CoinGecko API (free, no auth required).
+    # Returns: price change24_bps (price in USD; change24_bps as basis points, e.g., 19 for 0.19%)
+    local json
+    json=$(curl -s "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_market_cap=false&include_24hr_vol=false&include_24hr_change=true&include_market_cap_change_24h=false" 2>/dev/null) || return 1
+
+    local price change24_pct
+    price=$(echo "$json" | grep -o '"usd":[^,}]*' | head -1 | cut -d':' -f2)
+    change24_pct=$(echo "$json" | grep -o '"usd_24h_change":[^,}]*' | cut -d':' -f2)
+
+    # Parse price as integer.
+    price=$(echo "$price" | awk '{printf "%.0f", $1}')
+
+    # Parse change24 in basis points (multiply % by 100, so 0.19% becomes 19 bps).
+    change24_pct=$(echo "$change24_pct" | awk '{printf "%.0f", $1 * 100}')
+
+    [ -z "$price" ] && return 1
+    [ -z "$change24_pct" ] && change24_pct=0
+
+    echo "$price" "$change24_pct"
+}
+
+push_bitcoin_if_due() {
+    local now=$(date +%s)
+    (( now - LAST_BTC_POLL < BTC_POLL_INTERVAL )) && return 0
+    LAST_BTC_POLL=$now
+
+    local price_change
+    price_change=$(read_bitcoin_price) || { log "Bitcoin API call failed"; return 1; }
+
+    local price change24
+    read -r price change24 <<< "$price_change"
+
+    if [ -z "$price" ] || [ "$price" -eq 0 ]; then
+        log "Failed to parse Bitcoin price"
+        return 1
+    fi
+
+    BTC_CURRENT_PRICE=$price
+    BTC_24H_CHANGE=$change24
+
+    # Maintain a ring buffer of 48 hourly samples.
+    BTC_HISTORY[$BTC_HISTORY_IDX]=$price
+    BTC_HISTORY_IDX=$(( (BTC_HISTORY_IDX + 1) % 48 ))
+
+    # Track min/max over all collected samples.
+    if [ $BTC_24H_MIN -eq 0 ] || [ $price -lt $BTC_24H_MIN ]; then
+        BTC_24H_MIN=$price
+    fi
+    if [ $price -gt $BTC_24H_MAX ]; then
+        BTC_24H_MAX=$price
+    fi
+
+    # Build the history array as JSON: emit oldest-to-newest (ring buffer order).
+    local hist_json="["
+    local count=0
+    for i in {0..47}; do
+        local idx=$(( (BTC_HISTORY_IDX + i) % 48 ))
+        if [ -n "${BTC_HISTORY[$idx]}" ] && [ "${BTC_HISTORY[$idx]}" -gt 0 ]; then
+            [ $count -gt 0 ] && hist_json="$hist_json,"
+            hist_json="$hist_json${BTC_HISTORY[$idx]}"
+            (( count++ ))
+        fi
+    done
+    hist_json="$hist_json]"
+
+    local payload
+    payload=$(printf '{"btc":{"price":%d,"min24":%d,"max24":%d,"change24":%d,"history":%s}}' \
+        "$BTC_CURRENT_PRICE" "$BTC_24H_MIN" "$BTC_24H_MAX" "$BTC_24H_CHANGE" "$hist_json")
+
+    log "Bitcoin: \$$BTC_CURRENT_PRICE (24h: $BTC_24H_CHANGE)"
+    send_line "$payload" || return 1
+}
+
+push_system_stats_if_due() {
+    local now=$(date +%s)
+    (( now - LAST_SYS_PUSH < SYS_PUSH_INTERVAL )) && return 0
+    LAST_SYS_PUSH=$now
+
+    local cpu ram disk temp gpu net
+    cpu=$(read_cpu_pct)
+    ram=$(read_ram_pct)
+    disk=$(read_disk_pct)
+    temp=$(read_temp_c)
+    gpu=$(read_gpu_pct)
+    net=$(read_net_kbps)
+
+    send_line "{\"sys\":{\"cpu\":$cpu,\"ram\":$ram,\"disk\":$disk,\"temp\":$temp,\"gpu\":$gpu,\"net\":$net}}" || return 1
 }
 
 # Pull the active model alias out of Claude Code's settings.json and normalize
@@ -225,6 +422,14 @@ while true; do
     fi
 
     push_model_if_changed || {
+        close_port; DEVICE_PORT=""; sleep 5; continue
+    }
+
+    push_system_stats_if_due || {
+        close_port; DEVICE_PORT=""; sleep 5; continue
+    }
+
+    push_bitcoin_if_due || {
         close_port; DEVICE_PORT=""; sleep 5; continue
     }
 
