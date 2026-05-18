@@ -31,6 +31,11 @@ LV_FONT_DECLARE(font_mono_18);
 #define COL_AMBER     THEME_AMBER
 #define COL_RED       THEME_RED
 #define COL_BAR_BG    THEME_BAR_BG
+
+// ---- Futuristic neon palette (shared across all pages) ----
+#define NEON_DEEP    lv_color_hex(0x0a0a14)  // very dark blue-black panel
+#define NEON_CYAN    lv_color_hex(0x00D9FF)  // neon cyan accent
+#define NEON_BORDER  lv_color_hex(0x1a3a4a)  // subtle cyan-tinted border
 #define COL_NAV_ACTIVE THEME_PASTEL_BLUE
 
 // ---- Layout constants for 480x320 landscape (Panlee SC01 Plus) ----
@@ -238,28 +243,51 @@ static lv_obj_t* make_page(lv_obj_t* scr) {
     return p;
 }
 
-// One Session/Hebdo panel: pill label at top, big %, bar, reset row.
+// One Session/Hebdo panel — futuristic neon style with Claude orange accent.
 static void make_usage_panel(lv_obj_t* parent, int x, int y, const char* pill_text,
                              lv_obj_t** out_pct, lv_obj_t** out_pill,
                              lv_obj_t** out_bar, lv_obj_t** out_reset) {
-    lv_obj_t* panel = make_panel(parent, x, y, PANEL_W, PANEL_H);
+    // Deep dark panel with orange (Claude brand) neon border
+    lv_obj_t* panel = lv_obj_create(parent);
+    lv_obj_set_pos(panel, x, y);
+    lv_obj_set_size(panel, PANEL_W, PANEL_H);
+    lv_obj_set_style_bg_color(panel, NEON_DEEP, 0);
+    lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(panel, 6, 0);
+    lv_obj_set_style_border_color(panel, COL_ACCENT, 0);
+    lv_obj_set_style_border_width(panel, 1, 0);
+    lv_obj_set_style_border_opa(panel, LV_OPA_70, 0);
+    lv_obj_set_style_pad_left(panel, 12, 0);
+    lv_obj_set_style_pad_right(panel, 12, 0);
+    lv_obj_set_style_pad_top(panel, 10, 0);
+    lv_obj_set_style_pad_bottom(panel, 10, 0);
+    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(panel, LV_OBJ_FLAG_EVENT_BUBBLE);
 
-    *out_pill = make_pill(panel, pill_text);
+    // Small uppercase label in orange (no pill background — cleaner neon look)
+    *out_pill = lv_label_create(panel);
+    lv_label_set_text(*out_pill, pill_text);
+    lv_obj_set_style_text_font(*out_pill, &font_styrene_14, 0);
+    lv_obj_set_style_text_color(*out_pill, COL_ACCENT, 0);
     lv_obj_align(*out_pill, LV_ALIGN_TOP_LEFT, 0, 0);
 
+    // Big % in white
     *out_pct = lv_label_create(panel);
     lv_label_set_text(*out_pct, "---%");
     lv_obj_set_style_text_font(*out_pct, &font_styrene_48, 0);
     lv_obj_set_style_text_color(*out_pct, COL_TEXT, 0);
     lv_obj_align(*out_pct, LV_ALIGN_LEFT_MID, 0, 0);
 
-    *out_bar = make_bar(panel, 0, PANEL_H - 64, PANEL_W - 24, 18);
+    // Bar
+    *out_bar = make_bar(panel, 0, PANEL_H - 64, PANEL_W - 24, 14);
     lv_obj_align(*out_bar, LV_ALIGN_BOTTOM_LEFT, 0, -28);
 
+    // Reset time at bottom, small dim
     *out_reset = lv_label_create(panel);
     lv_label_set_text(*out_reset, "---");
-    lv_obj_set_style_text_font(*out_reset, &font_styrene_20, 0);
-    lv_obj_set_style_text_color(*out_reset, COL_DIM, 0);
+    lv_obj_set_style_text_font(*out_reset, &font_styrene_14, 0);
+    lv_obj_set_style_text_color(*out_reset, NEON_CYAN, 0);
+    lv_obj_set_style_text_opa(*out_reset, LV_OPA_70, 0);
     lv_obj_align(*out_reset, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 }
 
@@ -267,10 +295,10 @@ static void init_page_usage(lv_obj_t* scr) {
     page_usage = make_page(scr);
     // Panels live at (CONTENT_Y=60) globally, but inside the page they're
     // at (0,0); the page container itself is offset by CONTENT_Y.
-    make_usage_panel(page_usage, PANEL_X_LEFT, 0, "Session",
+    make_usage_panel(page_usage, PANEL_X_LEFT, 0, "SESSION",
                      &lbl_session_pct, &lbl_session_label,
                      &bar_session, &lbl_session_reset);
-    make_usage_panel(page_usage, PANEL_X_RIGHT, 0, "Hebdo",
+    make_usage_panel(page_usage, PANEL_X_RIGHT, 0, "HEBDO",
                      &lbl_weekly_pct, &lbl_weekly_label,
                      &bar_weekly, &lbl_weekly_reset);
 }
@@ -283,13 +311,16 @@ static void init_page_usage(lv_obj_t* scr) {
 
 static void make_sys_cell(lv_obj_t* parent, int x, int y,
                           const char* name, sys_cell_t* out) {
+    // Deep dark card with subtle cyan neon border
     lv_obj_t* card = lv_obj_create(parent);
     lv_obj_set_pos(card, x, y);
     lv_obj_set_size(card, SYS_CELL_W, SYS_CELL_H);
-    lv_obj_set_style_bg_color(card, COL_PANEL, 0);
+    lv_obj_set_style_bg_color(card, NEON_DEEP, 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(card, 8, 0);
-    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_radius(card, 4, 0);
+    lv_obj_set_style_border_color(card, NEON_CYAN, 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_border_opa(card, LV_OPA_60, 0);
     lv_obj_set_style_pad_left(card, 10, 0);
     lv_obj_set_style_pad_right(card, 10, 0);
     lv_obj_set_style_pad_top(card, 6, 0);
@@ -297,12 +328,14 @@ static void make_sys_cell(lv_obj_t* parent, int x, int y,
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
 
+    // Label uppercase in cyan neon
     lv_obj_t* lbl_name = lv_label_create(card);
     lv_label_set_text(lbl_name, name);
-    lv_obj_set_style_text_font(lbl_name, &font_styrene_16, 0);
-    lv_obj_set_style_text_color(lbl_name, COL_DIM, 0);
+    lv_obj_set_style_text_font(lbl_name, &font_styrene_12, 0);
+    lv_obj_set_style_text_color(lbl_name, NEON_CYAN, 0);
     lv_obj_align(lbl_name, LV_ALIGN_TOP_LEFT, 0, 0);
 
+    // Value bigger and white
     out->value = lv_label_create(card);
     lv_label_set_text(out->value, "---");
     lv_obj_set_style_text_font(out->value, &font_styrene_16, 0);
@@ -310,16 +343,16 @@ static void make_sys_cell(lv_obj_t* parent, int x, int y,
     lv_obj_align(out->value, LV_ALIGN_TOP_RIGHT, 0, 0);
 
     out->bar = lv_bar_create(card);
-    lv_obj_set_size(out->bar, SYS_CELL_W - 20, 6);
+    lv_obj_set_size(out->bar, SYS_CELL_W - 20, 5);
     lv_obj_align(out->bar, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     lv_bar_set_range(out->bar, 0, 100);
     lv_bar_set_value(out->bar, 0, LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(out->bar, COL_BAR_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(out->bar, NEON_BORDER, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(out->bar, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_radius(out->bar, 3, LV_PART_MAIN);
+    lv_obj_set_style_radius(out->bar, 2, LV_PART_MAIN);
     lv_obj_set_style_bg_color(out->bar, COL_GREEN, LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(out->bar, LV_OPA_COVER, LV_PART_INDICATOR);
-    lv_obj_set_style_radius(out->bar, 3, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(out->bar, 2, LV_PART_INDICATOR);
 }
 
 static void init_page_system(lv_obj_t* scr) {
@@ -328,21 +361,18 @@ static void init_page_system(lv_obj_t* scr) {
     int x_right = MARGIN + SYS_CELL_W + SYS_CELL_GAP;
     int row = SYS_CELL_H + SYS_CELL_GAP;
 
-    make_sys_cell(page_system, x_left,  0 * row, "CPU",    &sc_cpu);
-    make_sys_cell(page_system, x_right, 0 * row, "RAM",    &sc_ram);
-    make_sys_cell(page_system, x_left,  1 * row, "Disque", &sc_disk);
-    make_sys_cell(page_system, x_right, 1 * row, "Temp",   &sc_temp);
-    make_sys_cell(page_system, x_left,  2 * row, "GPU",    &sc_gpu);
-    make_sys_cell(page_system, x_right, 2 * row, "R\xC3\xA9seau", &sc_net);
+    make_sys_cell(page_system, x_left,  0 * row, "CPU",  &sc_cpu);
+    make_sys_cell(page_system, x_right, 0 * row, "RAM",  &sc_ram);
+    make_sys_cell(page_system, x_left,  1 * row, "DISK", &sc_disk);
+    make_sys_cell(page_system, x_right, 1 * row, "TEMP", &sc_temp);
+    make_sys_cell(page_system, x_left,  2 * row, "GPU",  &sc_gpu);
+    make_sys_cell(page_system, x_right, 2 * row, "NET",  &sc_net);
 }
 
 // ---- Bitcoin page (futuristic neon style) ----
 
 // Bitcoin brand color: official orange #F7931A
 #define BTC_ORANGE  lv_color_hex(0xF7931A)
-#define BTC_CYAN    lv_color_hex(0x00D9FF)   // neon cyan accent
-#define BTC_DEEP    lv_color_hex(0x0a0a14)   // very dark blue-black panel
-#define BTC_BORDER  lv_color_hex(0x1a3a4a)   // subtle cyan-tinted border
 #define BTC_GRID    lv_color_hex(0x162028)   // chart grid line
 
 // Build a small stat card with a label + value (used for HIGH/LOW/RANGE)
@@ -352,7 +382,7 @@ static lv_obj_t* make_btc_stat_card(lv_obj_t* parent, int x, int y, int w,
     lv_obj_t* card = lv_obj_create(parent);
     lv_obj_set_pos(card, x, y);
     lv_obj_set_size(card, w, 46);
-    lv_obj_set_style_bg_color(card, BTC_DEEP, 0);
+    lv_obj_set_style_bg_color(card, NEON_DEEP, 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(card, 4, 0);
     lv_obj_set_style_border_color(card, accent_color, 0);
@@ -384,7 +414,7 @@ static void init_page_bitcoin(lv_obj_t* scr) {
     lv_obj_t* header = lv_obj_create(page_bitcoin);
     lv_obj_set_pos(header, MARGIN, 0);
     lv_obj_set_size(header, CONTENT_W, 50);
-    lv_obj_set_style_bg_color(header, BTC_DEEP, 0);
+    lv_obj_set_style_bg_color(header, NEON_DEEP, 0);
     lv_obj_set_style_bg_opa(header, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(header, 4, 0);
     lv_obj_set_style_border_color(header, BTC_ORANGE, 0);
@@ -409,14 +439,14 @@ static void init_page_bitcoin(lv_obj_t* scr) {
     lv_obj_t* btc_symbol = lv_label_create(btc_badge);
     lv_label_set_text(btc_symbol, "B");   // Ascii B as bitcoin glyph (font safe)
     lv_obj_set_style_text_font(btc_symbol, &font_styrene_24, 0);
-    lv_obj_set_style_text_color(btc_symbol, BTC_DEEP, 0);
+    lv_obj_set_style_text_color(btc_symbol, NEON_DEEP, 0);
     lv_obj_center(btc_symbol);
 
     // "BITCOIN / USD" label
     lv_obj_t* lbl_pair = lv_label_create(header);
     lv_label_set_text(lbl_pair, "BTC/USD");
     lv_obj_set_style_text_font(lbl_pair, &font_styrene_12, 0);
-    lv_obj_set_style_text_color(lbl_pair, BTC_CYAN, 0);
+    lv_obj_set_style_text_color(lbl_pair, NEON_CYAN, 0);
     lv_obj_align(lbl_pair, LV_ALIGN_LEFT_MID, 50, -10);
 
     // Price
@@ -448,10 +478,10 @@ static void init_page_bitcoin(lv_obj_t* scr) {
     lv_chart_set_update_mode(btc_chart, LV_CHART_UPDATE_MODE_SHIFT);
     lv_chart_set_div_line_count(btc_chart, 4, 6);
 
-    lv_obj_set_style_bg_color(btc_chart, BTC_DEEP, 0);
+    lv_obj_set_style_bg_color(btc_chart, NEON_DEEP, 0);
     lv_obj_set_style_bg_opa(btc_chart, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btc_chart, 4, 0);
-    lv_obj_set_style_border_color(btc_chart, BTC_BORDER, 0);
+    lv_obj_set_style_border_color(btc_chart, NEON_BORDER, 0);
     lv_obj_set_style_border_width(btc_chart, 1, 0);
     lv_obj_set_style_pad_all(btc_chart, 6, 0);
 
@@ -474,9 +504,9 @@ static void init_page_bitcoin(lv_obj_t* scr) {
     int card_y = 174;
 
     make_btc_stat_card(page_bitcoin, MARGIN, card_y, card_w,
-                       "6M HIGH", &btc_high_value, BTC_CYAN);
+                       "6M HIGH", &btc_high_value, NEON_CYAN);
     make_btc_stat_card(page_bitcoin, MARGIN + card_w + card_gap, card_y, card_w,
-                       "6M LOW", &btc_low_value, BTC_CYAN);
+                       "6M LOW", &btc_low_value, NEON_CYAN);
     make_btc_stat_card(page_bitcoin, MARGIN + 2 * (card_w + card_gap), card_y, card_w,
                        "POSITION", &btc_range_value, BTC_ORANGE);
 }
@@ -718,7 +748,7 @@ void ui_update_bitcoin_data(const BitcoinData* data) {
     lv_label_set_text(btc_range_value, buf);
     // Color the position by where it is in the range (high = orange/red, low = cyan)
     lv_color_t pos_color = BTC_ORANGE;
-    if (position_pct < 33) pos_color = BTC_CYAN;
+    if (position_pct < 33) pos_color = NEON_CYAN;
     else if (position_pct < 66) pos_color = COL_AMBER;
     lv_obj_set_style_text_color(btc_range_value, pos_color, 0);
 
