@@ -658,20 +658,23 @@ static void init_chrome(lv_obj_t* scr) {
     lv_obj_align(lbl_effort, LV_ALIGN_TOP_LEFT, MARGIN, TITLE_Y + 4);
     lv_obj_add_flag(lbl_effort, LV_OBJ_FLAG_HIDDEN);
 
-    // Each nav button hosts its own animated Claude thumbnail. Distinct
-    // animations give each tab its own personality:
-    //   0 Usage   → "idle breathe"     (calm, default)
-    //   1 System  → "work coding"      (Claude typing on a keyboard)
-    //   2 Bitcoin → "dance bounce dj"  (the trading dance)
-    //   3 Actions → "expression wink"  (ready to fire scripts)
-    const char* anims[4] = {
-        "idle breathe", "work coding", "dance bounce dj", "expression wink",
-    };
+    // Nav button content:
+    //   0 Usage   → Claude pixel-art mascot (idle breathe)
+    //   1 System  → equalizer bars pictogram (cyan)
+    //   2 Bitcoin → pulsing ₿ glyph pictogram (orange)
+    //   3 Actions → lightning bolt pictogram (cyan + orange flash)
+    // Slot 0 stays a character; slots 1-3 are informative icons that
+    // visually announce what each tab does.
     for (int i = 0; i < 4; i++) {
         int x = MARGIN + i * (NAV_BTN_W + NAV_GAP);
         nav_btns[i] = make_nav_button_shell(scr, x, NAV_Y);
         clawd_thumb_create(i, nav_btns[i], 2, lv_color_to_u16(NEON_DEEP));
-        clawd_thumb_set_animation(i, anims[i]);
+        switch (i) {
+            case 0: clawd_thumb_set_animation(i, "idle breathe"); break;
+            case 1: clawd_thumb_set_pictogram(i, "system eq");    break;
+            case 2: clawd_thumb_set_pictogram(i, "bitcoin coin"); break;
+            case 3: clawd_thumb_set_pictogram(i, "actions bolt"); break;
+        }
         lv_obj_t* thumb = clawd_thumb_canvas(i);
         if (thumb) lv_obj_center(thumb);
         lv_obj_add_event_cb(nav_btns[i], nav_click_cb, LV_EVENT_CLICKED,
