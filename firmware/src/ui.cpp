@@ -293,12 +293,14 @@ static void make_usage_panel(lv_obj_t* parent, int x, int y, const char* pill_te
 
 static void init_page_usage(lv_obj_t* scr) {
     page_usage = make_page(scr);
-    // Panels live at (CONTENT_Y=60) globally, but inside the page they're
-    // at (0,0); the page container itself is offset by CONTENT_Y.
-    make_usage_panel(page_usage, PANEL_X_LEFT, 0, "SESSION",
+    // Push panels down by ~30px so the model pill (top-right) doesn't overlap
+    // the HEBDO panel border. The pill lives in chrome and the page starts at
+    // CONTENT_Y=12 globally, same y as the pill.
+    int top_offset = 30;
+    make_usage_panel(page_usage, PANEL_X_LEFT, top_offset, "SESSION",
                      &lbl_session_pct, &lbl_session_label,
                      &bar_session, &lbl_session_reset);
-    make_usage_panel(page_usage, PANEL_X_RIGHT, 0, "HEBDO",
+    make_usage_panel(page_usage, PANEL_X_RIGHT, top_offset, "HEBDO",
                      &lbl_weekly_pct, &lbl_weekly_label,
                      &bar_weekly, &lbl_weekly_reset);
 }
