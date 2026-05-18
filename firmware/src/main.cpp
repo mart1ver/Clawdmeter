@@ -209,6 +209,20 @@ static void process_usb_json(const char* line) {
     }
 }
 
+// Switch screen via serial: "screen <name>" where name is one of:
+// usage, system, bitcoin, actions, splash
+static void switch_screen_by_name(const char* name) {
+    screen_t s;
+    if      (strcmp(name, "usage")   == 0) s = SCREEN_USAGE;
+    else if (strcmp(name, "system")  == 0) s = SCREEN_SYSTEM;
+    else if (strcmp(name, "bitcoin") == 0) s = SCREEN_BITCOIN;
+    else if (strcmp(name, "actions") == 0) s = SCREEN_ACTIONS;
+    else if (strcmp(name, "splash")  == 0) s = SCREEN_SPLASH;
+    else { Serial.println("{\"err\":\"unknown screen\"}"); return; }
+    ui_show_screen(s);
+    Serial.printf("{\"screen\":\"%s\"}\n", name);
+}
+
 static void check_serial_cmd() {
     while (Serial.available()) {
         char c = Serial.read();
@@ -217,6 +231,7 @@ static void check_serial_cmd() {
             if (cmd_pos > 0) {
                 if (cmd_buf[0] == '{')                       process_usb_json(cmd_buf);
                 else if (strcmp(cmd_buf, "screenshot") == 0) send_screenshot();
+                else if (strncmp(cmd_buf, "screen ", 7) == 0) switch_screen_by_name(cmd_buf + 7);
             }
             cmd_pos = 0;
         } else if (cmd_pos < CMD_BUF_SIZE - 1) {

@@ -296,7 +296,7 @@ static void init_page_usage(lv_obj_t* scr) {
     // Push panels down by ~30px so the model pill (top-right) doesn't overlap
     // the HEBDO panel border. The pill lives in chrome and the page starts at
     // CONTENT_Y=12 globally, same y as the pill.
-    int top_offset = 30;
+    int top_offset = 45;
     make_usage_panel(page_usage, PANEL_X_LEFT, top_offset, "SESSION",
                      &lbl_session_pct, &lbl_session_label,
                      &bar_session, &lbl_session_reset);
