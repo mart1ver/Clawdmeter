@@ -94,33 +94,35 @@ def gen_bitcoin_coin():
         (0xff, 0xff, 0xff), # 4 white
     ]
 
-    # Hand-drawn glyph. # = orange fill, . = bg.
-    # Structure:
-    #   y=3-4   : top stems (2-cell wide x 2-cell tall pairs)
-    #   y=5-6   : top horizontal bar of B
-    #   y=7-8   : cut-outs between bars (left stem + middle stem + right bump)
-    #   y=9-10  : middle horizontal bar of B
-    #   y=11-12 : same cut-outs
-    #   y=13-14 : bottom horizontal bar of B
-    #   y=15-16 : bottom stems (mirror of top)
+    # Bigger, bolder Bitcoin "B" with two short stems above + below.
+    # Layout:
+    #   B body at x=2..17 (16 wide), y=3..14 (12 tall)
+    #     - left vertical  x=2..5
+    #     - gap            x=6..13
+    #     - right vertical x=14..17
+    #     - bars at y=3-4 (top), y=8-9 (middle), y=13-14 (bottom)
+    #   Stems centered on the left+right verticals at x=3-4 and x=15-16
+    #     - top stems    y=1..2
+    #     - bottom stems y=15..16
+    # Stems align with B verticals so the eye reads continuous strokes.
     GLYPH = [
         "....................",  # y=0
-        "....................",  # y=1
-        "....................",  # y=2
-        "........##...##.....",  # y=3  top stems
-        "........##...##.....",  # y=4
-        "....##############..",  # y=5  top bar
-        "....##############..",  # y=6
-        "....###...##....###.",  # y=7  cuts + stem visible
-        "....###...##....###.",  # y=8
-        "....##############..",  # y=9  middle bar
-        "....##############..",  # y=10
-        "....###...##....###.",  # y=11
-        "....###...##....###.",  # y=12
-        "....##############..",  # y=13 bottom bar
-        "....##############..",  # y=14
-        "........##...##.....",  # y=15 bottom stems
-        "........##...##.....",  # y=16
+        "...##..........##...",  # y=1  top stems (aligned to verticals)
+        "...##..........##...",  # y=2
+        "..################..",  # y=3  top bar (full B width)
+        "..################..",  # y=4
+        "..####........####..",  # y=5  left + gap + right
+        "..####........####..",  # y=6
+        "..####........####..",  # y=7
+        "..################..",  # y=8  middle bar
+        "..################..",  # y=9
+        "..####........####..",  # y=10
+        "..####........####..",  # y=11
+        "..####........####..",  # y=12
+        "..################..",  # y=13 bottom bar
+        "..################..",  # y=14
+        "...##..........##...",  # y=15 bottom stems
+        "...##..........##...",  # y=16
         "....................",  # y=17
         "....................",  # y=18
         "....................",  # y=19
