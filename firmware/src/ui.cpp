@@ -81,10 +81,12 @@ static lv_obj_t* lbl_weekly_pct;
 static lv_obj_t* lbl_weekly_label;
 static lv_obj_t* lbl_weekly_reset;
 
-// ---- System page widgets (2 cols x 3 rows) ----
+// ---- System page widgets (3 cols x 2 rows, sparkline-based) ----
+#define SYS_SPARK_POINTS  24    // history buffer per metric
 typedef struct {
     lv_obj_t* value;
-    lv_obj_t* bar;
+    lv_obj_t* chart;
+    lv_chart_series_t* series;
 } sys_cell_t;
 static sys_cell_t sc_cpu, sc_ram, sc_disk, sc_temp, sc_gpu, sc_net;
 
@@ -306,13 +308,20 @@ static void init_page_usage(lv_obj_t* scr) {
 }
 
 // ---- System page (live host telemetry pushed by the daemon) ----
+// Layout: 3 cols × 2 rows of sparkline cards. Each card shows a live
+// rolling chart of the metric's history — much more informative than
+// a static bar and gives the page a "trading dashboard" feel.
 
-#define SYS_CELL_W    222
-#define SYS_CELL_H    50
-#define SYS_CELL_GAP  12
+#define SYS_GAP       8
+#define SYS_COLS      3
+#define SYS_ROWS      2
+// Cell width: divide content width across 3 columns with 2 gaps.
+#define SYS_CELL_W    ((CONTENT_W - (SYS_COLS - 1) * SYS_GAP) / SYS_COLS)   // ~146
+#define SYS_CELL_H    105
 
 static void make_sys_cell(lv_obj_t* parent, int x, int y,
-                          const char* name, sys_cell_t* out) {
+                          const char* name, sys_cell_t* out,
+                          lv_color_t accent) {
     // Deep dark card with subtle cyan neon border
     lv_obj_t* card = lv_obj_create(parent);
     lv_obj_set_pos(card, x, y);
@@ -323,52 +332,75 @@ static void make_sys_cell(lv_obj_t* parent, int x, int y,
     lv_obj_set_style_border_color(card, NEON_CYAN, 0);
     lv_obj_set_style_border_width(card, 1, 0);
     lv_obj_set_style_border_opa(card, LV_OPA_60, 0);
-    lv_obj_set_style_pad_left(card, 10, 0);
-    lv_obj_set_style_pad_right(card, 10, 0);
+    lv_obj_set_style_pad_left(card, 8, 0);
+    lv_obj_set_style_pad_right(card, 8, 0);
     lv_obj_set_style_pad_top(card, 6, 0);
-    lv_obj_set_style_pad_bottom(card, 8, 0);
+    lv_obj_set_style_pad_bottom(card, 6, 0);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
 
-    // Label uppercase in cyan neon
+    // Label uppercase in cyan neon (top-left)
     lv_obj_t* lbl_name = lv_label_create(card);
     lv_label_set_text(lbl_name, name);
     lv_obj_set_style_text_font(lbl_name, &font_styrene_12, 0);
     lv_obj_set_style_text_color(lbl_name, NEON_CYAN, 0);
     lv_obj_align(lbl_name, LV_ALIGN_TOP_LEFT, 0, 0);
 
-    // Value bigger and white
+    // Value in white, prominent (top-right)
     out->value = lv_label_create(card);
     lv_label_set_text(out->value, "---");
     lv_obj_set_style_text_font(out->value, &font_styrene_16, 0);
     lv_obj_set_style_text_color(out->value, COL_TEXT, 0);
     lv_obj_align(out->value, LV_ALIGN_TOP_RIGHT, 0, 0);
 
-    out->bar = lv_bar_create(card);
-    lv_obj_set_size(out->bar, SYS_CELL_W - 20, 5);
-    lv_obj_align(out->bar, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-    lv_bar_set_range(out->bar, 0, 100);
-    lv_bar_set_value(out->bar, 0, LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(out->bar, NEON_BORDER, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(out->bar, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_radius(out->bar, 2, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(out->bar, COL_GREEN, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_opa(out->bar, LV_OPA_COVER, LV_PART_INDICATOR);
-    lv_obj_set_style_radius(out->bar, 2, LV_PART_INDICATOR);
+    // Sparkline chart — takes the bottom 60% of the card
+    out->chart = lv_chart_create(card);
+    int chart_w = SYS_CELL_W - 16;       // minus left+right padding
+    int chart_h = SYS_CELL_H - 36;       // leaves room for label/value at top
+    lv_obj_set_size(out->chart, chart_w, chart_h);
+    lv_obj_align(out->chart, LV_ALIGN_BOTTOM_MID, 0, 4);
+    lv_chart_set_type(out->chart, LV_CHART_TYPE_LINE);
+    lv_chart_set_point_count(out->chart, SYS_SPARK_POINTS);
+    lv_chart_set_update_mode(out->chart, LV_CHART_UPDATE_MODE_SHIFT);
+    lv_chart_set_range(out->chart, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
+    lv_chart_set_div_line_count(out->chart, 2, 4);
+
+    // Transparent bg so the card background shows through
+    lv_obj_set_style_bg_opa(out->chart, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(out->chart, 0, 0);
+    lv_obj_set_style_pad_all(out->chart, 0, 0);
+
+    // Faint cyan grid lines
+    lv_obj_set_style_line_color(out->chart, NEON_BORDER, LV_PART_MAIN);
+    lv_obj_set_style_line_width(out->chart, 1, LV_PART_MAIN);
+    lv_obj_set_style_line_opa(out->chart, LV_OPA_50, LV_PART_MAIN);
+
+    // Thick accent-colored line, no point markers
+    lv_obj_set_style_line_width(out->chart, 2, LV_PART_ITEMS);
+    lv_obj_set_style_size(out->chart, 0, 0, LV_PART_INDICATOR);
+
+    out->series = lv_chart_add_series(out->chart, accent, LV_CHART_AXIS_PRIMARY_Y);
+
+    // Pre-fill the chart with 0s so it doesn't show a flat line in
+    // the middle until enough samples arrive.
+    for (int i = 0; i < SYS_SPARK_POINTS; i++) {
+        lv_chart_set_next_value(out->chart, out->series, 0);
+    }
 }
 
 static void init_page_system(lv_obj_t* scr) {
     page_system = make_page(scr);
-    int x_left = MARGIN;
-    int x_right = MARGIN + SYS_CELL_W + SYS_CELL_GAP;
-    int row = SYS_CELL_H + SYS_CELL_GAP;
+    int col_w = SYS_CELL_W + SYS_GAP;
+    int row_h = SYS_CELL_H + SYS_GAP;
 
-    make_sys_cell(page_system, x_left,  0 * row, "CPU",  &sc_cpu);
-    make_sys_cell(page_system, x_right, 0 * row, "RAM",  &sc_ram);
-    make_sys_cell(page_system, x_left,  1 * row, "DISK", &sc_disk);
-    make_sys_cell(page_system, x_right, 1 * row, "TEMP", &sc_temp);
-    make_sys_cell(page_system, x_left,  2 * row, "GPU",  &sc_gpu);
-    make_sys_cell(page_system, x_right, 2 * row, "NET",  &sc_net);
+    // Row 0: CPU | RAM | TEMP
+    make_sys_cell(page_system, MARGIN + 0 * col_w, 0 * row_h, "CPU",  &sc_cpu,  NEON_CYAN);
+    make_sys_cell(page_system, MARGIN + 1 * col_w, 0 * row_h, "RAM",  &sc_ram,  NEON_CYAN);
+    make_sys_cell(page_system, MARGIN + 2 * col_w, 0 * row_h, "TEMP", &sc_temp, COL_ACCENT);
+    // Row 1: DISK | GPU | NET
+    make_sys_cell(page_system, MARGIN + 0 * col_w, 1 * row_h, "DISK", &sc_disk, NEON_CYAN);
+    make_sys_cell(page_system, MARGIN + 1 * col_w, 1 * row_h, "GPU",  &sc_gpu,  NEON_CYAN);
+    make_sys_cell(page_system, MARGIN + 2 * col_w, 1 * row_h, "NET",  &sc_net,  COL_ACCENT);
 }
 
 // ---- Bitcoin page (futuristic neon style) ----
@@ -628,12 +660,16 @@ static lv_color_t temp_color(int t) {
     return COL_GREEN;
 }
 
+// Push a new sample into the sparkline + update the headline value text.
+// Color tint of the chart line follows the current sample (green/amber/red).
 static void set_cell(sys_cell_t* c, const char* value_str, int bar_pct, lv_color_t color) {
     lv_label_set_text(c->value, value_str);
     if (bar_pct < 0) bar_pct = 0;
     if (bar_pct > 100) bar_pct = 100;
-    lv_bar_set_value(c->bar, bar_pct, LV_ANIM_ON);
-    lv_obj_set_style_bg_color(c->bar, color, LV_PART_INDICATOR);
+    lv_chart_set_next_value(c->chart, c->series, bar_pct);
+    lv_obj_set_style_line_color(c->chart, color, LV_PART_ITEMS);
+    // Also tint the headline value to match the alert level
+    lv_obj_set_style_text_color(c->value, color, 0);
 }
 
 void ui_update_system_stats(const SystemStats* s) {
