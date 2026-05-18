@@ -8,6 +8,7 @@ struct UsageData {
     int weekly_reset_mins;   // minutes until weekly resets
     char status[16];         // "allowed" or "limited"
     char model[16];          // "opus" / "sonnet" / "haiku" / "default"
+    char effort[16];         // "low" / "medium" / "high" / "max" / "default"
     bool ok;                 // data parse succeeded
     bool valid;              // false until first successful parse
 };

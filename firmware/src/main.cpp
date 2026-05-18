@@ -115,6 +115,7 @@ static bool parse_json(const char* json, UsageData* out) {
     if (!doc["wr"].isNull()) out->weekly_reset_mins  = doc["wr"].as<int>();
     if (!doc["st"].isNull()) strlcpy(out->status, doc["st"], sizeof(out->status));
     if (!doc["m"].isNull())  strlcpy(out->model,  doc["m"],  sizeof(out->model));
+    if (!doc["e"].isNull())  strlcpy(out->effort, doc["e"],  sizeof(out->effort));
     if (!doc["ok"].isNull()) out->ok                 = doc["ok"].as<bool>();
 
     // System telemetry (nested "sys" object). Daemon pushes this every ~2s

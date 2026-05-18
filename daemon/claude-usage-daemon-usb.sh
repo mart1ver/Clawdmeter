@@ -342,6 +342,18 @@ read_model() {
     esac
 }
 
+# Pull the effort level out of Claude Code's settings.json. Mirrors read_model
+# but for the "effortLevel" key. Returns low/medium/high/max — or "default" if
+# unset. NOTE: /effort "this session only" doesn't update settings.json, so the
+# pill reflects the persistent baseline, not transient session overrides.
+read_effort() {
+    local raw
+    raw=$(grep -oE '"effortLevel"[[:space:]]*:[[:space:]]*"[^"]*"' "$HOME/.claude/settings.json" 2>/dev/null \
+          | head -1 | sed -E 's/.*"([^"]*)"[^"]*$/\1/')
+    [ -z "$raw" ] && raw="default"
+    echo "$raw"
+}
+
 # Pick the first ESP32 USB-CDC port (303a:1001 enumerates as ttyACM*).
 detect_port() {
     for p in /dev/ttyACM0 /dev/ttyACM1 /dev/ttyACM2 /dev/ttyUSB0 /dev/ttyUSB1; do
@@ -460,17 +472,18 @@ poll() {
     s7d_util=${s7d_util:-0}
     s7d_reset=${s7d_reset:-0}
 
-    local model
+    local model effort
     model=$(read_model)
+    effort=$(read_effort)
 
     local payload
-    payload=$(awk -v u5="$s5h_util" -v r5="$s5h_reset" -v u7="$s7d_util" -v r7="$s7d_reset" -v st="$status" -v m="$model" -v now="$now" \
+    payload=$(awk -v u5="$s5h_util" -v r5="$s5h_reset" -v u7="$s7d_util" -v r7="$s7d_reset" -v st="$status" -v m="$model" -v e="$effort" -v now="$now" \
         'BEGIN {
             sp = sprintf("%.0f", u5 * 100);
             sr = (r5 - now) / 60; sr = sr > 0 ? sprintf("%.0f", sr) : 0;
             wp = sprintf("%.0f", u7 * 100);
             wr = (r7 - now) / 60; wr = wr > 0 ? sprintf("%.0f", wr) : 0;
-            printf "{\"s\":%s,\"sr\":%s,\"w\":%s,\"wr\":%s,\"st\":\"%s\",\"m\":\"%s\",\"ok\":true}", sp, sr, wp, wr, st, m;
+            printf "{\"s\":%s,\"sr\":%s,\"w\":%s,\"wr\":%s,\"st\":\"%s\",\"m\":\"%s\",\"e\":\"%s\",\"ok\":true}", sp, sr, wp, wr, st, m, e;
         }')
 
     log "Sending: $payload"
@@ -497,28 +510,37 @@ log "=== Claude Usage Tracker Daemon (USB) ==="
 log "Poll interval: ${POLL_INTERVAL}s (API), 2s (model watcher)"
 
 SETTINGS_FILE="$HOME/.claude/settings.json"
-TICK=2                  # inner-loop cadence for model watcher
+TICK=2                  # inner-loop cadence for model + effort watcher
 LAST_API_POLL=0
-LAST_MODEL_MTIME=0
+LAST_SETTINGS_MTIME=0   # mtime of settings.json — shared by model+effort watch
 LAST_MODEL=""
+LAST_EFFORT=""
 BTC_HISTORY_INIT=0      # Flag: have we fetched 180 days of Bitcoin history?
 
-# Push a tiny partial JSON when the user runs /model in Claude Code. The
-# firmware treats missing fields as "keep previous value" so this leaves the
-# gauges untouched.
-push_model_if_changed() {
+# Push partial JSON whenever the settings.json file changes — covers both
+# /model and /effort. The firmware treats missing fields as "keep previous
+# value" so this leaves the gauges untouched.
+push_settings_if_changed() {
     [ -f "$SETTINGS_FILE" ] || return 0
     local mtime
     mtime=$(stat -c %Y "$SETTINGS_FILE" 2>/dev/null) || return 0
-    [ "$mtime" = "$LAST_MODEL_MTIME" ] && return 0
-    LAST_MODEL_MTIME="$mtime"
+    [ "$mtime" = "$LAST_SETTINGS_MTIME" ] && return 0
+    LAST_SETTINGS_MTIME="$mtime"
 
-    local m
+    local m e
     m=$(read_model)
-    [ "$m" = "$LAST_MODEL" ] && return 0
-    log "Model changed: ${LAST_MODEL:-?} → $m"
-    LAST_MODEL="$m"
-    send_line "{\"m\":\"$m\"}" || return 1
+    e=$(read_effort)
+
+    if [ "$m" != "$LAST_MODEL" ]; then
+        log "Model changed: ${LAST_MODEL:-?} → $m"
+        LAST_MODEL="$m"
+        send_line "{\"m\":\"$m\"}" || return 1
+    fi
+    if [ "$e" != "$LAST_EFFORT" ]; then
+        log "Effort changed: ${LAST_EFFORT:-?} → $e"
+        LAST_EFFORT="$e"
+        send_line "{\"e\":\"$e\"}" || return 1
+    fi
 }
 
 while true; do
@@ -537,9 +559,10 @@ while true; do
             continue
         }
         start_reader
-        # Force re-push of model on reconnect.
-        LAST_MODEL_MTIME=0
+        # Force re-push of model + effort on reconnect.
+        LAST_SETTINGS_MTIME=0
         LAST_MODEL=""
+        LAST_EFFORT=""
         # Force re-push of Bitcoin data on reconnect (firmware may have rebooted).
         LAST_BTC_DAY=0
         # Initialize Bitcoin history once at startup.
@@ -557,7 +580,7 @@ while true; do
         close_port; DEVICE_PORT=""; sleep 1; continue
     fi
 
-    push_model_if_changed || {
+    push_settings_if_changed || {
         close_port; DEVICE_PORT=""; sleep 5; continue
     }
 

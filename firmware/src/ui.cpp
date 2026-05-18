@@ -62,6 +62,8 @@ LV_FONT_DECLARE(font_mono_18);
 // ---- Chrome (always on top of pages, hidden on splash) ----
 static lv_obj_t* lbl_title;
 static lv_obj_t* lbl_model;         // model pill top-right (Usage page only)
+static lv_obj_t* lbl_effort;        // effort pill top-left  (Usage page only)
+static char last_effort[16] = {0};
 static lv_obj_t* nav_btns[4];
 static lv_image_dsc_t nav_icon_dscs[4];
 
@@ -651,6 +653,11 @@ static void init_chrome(lv_obj_t* scr) {
     lv_obj_align(lbl_model, LV_ALIGN_TOP_RIGHT, -MARGIN, TITLE_Y + 4);
     lv_obj_add_flag(lbl_model, LV_OBJ_FLAG_HIDDEN);
 
+    // Effort pill (top-left, symmetric with model on right)
+    lbl_effort = make_pill(scr, "");
+    lv_obj_align(lbl_effort, LV_ALIGN_TOP_LEFT, MARGIN, TITLE_Y + 4);
+    lv_obj_add_flag(lbl_effort, LV_OBJ_FLAG_HIDDEN);
+
     // Each nav button hosts its own animated Claude thumbnail. Distinct
     // animations give each tab its own personality:
     //   0 Usage   → "idle breathe"     (calm, default)
@@ -736,6 +743,26 @@ void ui_update(const UsageData* data) {
         last_model[sizeof(last_model) - 1] = '\0';
         if (current_screen == SCREEN_USAGE) {
             lv_obj_clear_flag(lbl_model, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    if (data->effort[0]) {
+        // Show as uppercase tech label (e.g. "HIGH", "MAX") and remember
+        // it for re-display when the user navigates back to Usage.
+        char up[16];
+        size_t n = strlen(data->effort);
+        if (n >= sizeof(up)) n = sizeof(up) - 1;
+        for (size_t i = 0; i < n; i++) {
+            up[i] = (data->effort[i] >= 'a' && data->effort[i] <= 'z')
+                  ? data->effort[i] - 32
+                  : data->effort[i];
+        }
+        up[n] = '\0';
+        lv_label_set_text(lbl_effort, up);
+        strncpy(last_effort, up, sizeof(last_effort) - 1);
+        last_effort[sizeof(last_effort) - 1] = '\0';
+        if (current_screen == SCREEN_USAGE) {
+            lv_obj_clear_flag(lbl_effort, LV_OBJ_FLAG_HIDDEN);
         }
     }
 }
@@ -959,6 +986,7 @@ static void apply_chrome_visibility(bool show) {
     } else {
         lv_obj_add_flag(lbl_title, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lbl_model, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lbl_effort, LV_OBJ_FLAG_HIDDEN);
         for (int i = 0; i < 4; i++) lv_obj_add_flag(nav_btns[i], LV_OBJ_FLAG_HIDDEN);
     }
 }
@@ -972,12 +1000,18 @@ static void update_chrome_for_screen(screen_t s) {
     lv_label_set_text(lbl_title, title_for_screen(s));
     update_nav_active(s);
 
-    // Model pill only visible on Usage page and only after we have a model.
+    // Model + effort pills only visible on Usage page (after first values).
     if (s == SCREEN_USAGE && last_model[0]) {
         lv_label_set_text(lbl_model, last_model);
         lv_obj_clear_flag(lbl_model, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(lbl_model, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s == SCREEN_USAGE && last_effort[0]) {
+        lv_label_set_text(lbl_effort, last_effort);
+        lv_obj_clear_flag(lbl_effort, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(lbl_effort, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
