@@ -545,7 +545,7 @@ static void init_page_bitcoin(lv_obj_t* scr) {
                        "POSITION", &btc_range_value, BTC_ORANGE);
 }
 
-// Shared placeholder helper for the still-unbuilt pages (actions).
+// Shared placeholder helper for any future unbuilt page.
 static void init_placeholder_page(lv_obj_t** out_page, lv_obj_t* scr, const char* text) {
     *out_page = make_page(scr);
     lv_obj_t* lbl = lv_label_create(*out_page);
@@ -553,6 +553,79 @@ static void init_placeholder_page(lv_obj_t** out_page, lv_obj_t* scr, const char
     lv_obj_set_style_text_font(lbl, &font_styrene_28, 0);
     lv_obj_set_style_text_color(lbl, COL_DIM, 0);
     lv_obj_center(lbl);
+}
+
+// ---- Actions page: 6 buttons that trigger user scripts on the host ----
+// Each tap sends {"action":N} over USB serial. The daemon listens for this
+// message and runs ~/.config/clawdmeter/action<N>.sh.
+
+static void action_clicked_cb(lv_event_t* e) {
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    Serial.printf("{\"action\":%d}\n", idx + 1);
+}
+
+static void make_action_button(lv_obj_t* parent, int x, int y, int idx,
+                               const char* label_text, lv_color_t accent) {
+    lv_obj_t* btn = lv_obj_create(parent);
+    lv_obj_set_pos(btn, x, y);
+    lv_obj_set_size(btn, SYS_CELL_W, SYS_CELL_H);
+    lv_obj_set_style_bg_color(btn, NEON_DEEP, 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(btn, 4, 0);
+    lv_obj_set_style_border_color(btn, accent, 0);
+    lv_obj_set_style_border_width(btn, 1, 0);
+    lv_obj_set_style_border_opa(btn, LV_OPA_60, 0);
+    lv_obj_set_style_pad_all(btn, 0, 0);
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Pressed state: border lights up to full opacity + brighter fill
+    lv_obj_set_style_border_opa(btn, LV_OPA_COVER, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(btn, NEON_BORDER, LV_STATE_PRESSED);
+
+    // Big number in accent color (top)
+    char num_str[4];
+    snprintf(num_str, sizeof(num_str), "%d", idx + 1);
+    lv_obj_t* num = lv_label_create(btn);
+    lv_label_set_text(num, num_str);
+    lv_obj_set_style_text_font(num, &font_styrene_48, 0);
+    lv_obj_set_style_text_color(num, accent, 0);
+    lv_obj_align(num, LV_ALIGN_CENTER, 0, -10);
+    lv_obj_add_flag(num, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    // Small label below
+    lv_obj_t* lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, label_text);
+    lv_obj_set_style_text_font(lbl, &font_styrene_12, 0);
+    lv_obj_set_style_text_color(lbl, COL_DIM, 0);
+    lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, -6);
+    lv_obj_add_flag(lbl, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    lv_obj_add_event_cb(btn, action_clicked_cb, LV_EVENT_CLICKED,
+                        (void*)(intptr_t)idx);
+}
+
+static void init_page_actions(lv_obj_t* scr) {
+    page_actions = make_page(scr);
+    int col_w = SYS_CELL_W + SYS_GAP;
+    int row_h = SYS_CELL_H + SYS_GAP;
+
+    // Alternate cyan/orange for visual rhythm
+    const lv_color_t colors[6] = {
+        NEON_CYAN, COL_ACCENT, NEON_CYAN,
+        COL_ACCENT, NEON_CYAN, COL_ACCENT,
+    };
+    const char* labels[6] = {
+        "ACTION 1", "ACTION 2", "ACTION 3",
+        "ACTION 4", "ACTION 5", "ACTION 6",
+    };
+
+    for (int i = 0; i < 6; i++) {
+        int col = i % 3;
+        int row = i / 3;
+        make_action_button(page_actions,
+                           MARGIN + col * col_w, row * row_h,
+                           i, labels[i], colors[i]);
+    }
 }
 
 // ======== Chrome ========
@@ -600,7 +673,7 @@ void ui_init(void) {
     init_page_usage(scr);
     init_page_system(scr);
     init_page_bitcoin(scr);
-    init_placeholder_page(&page_actions, scr, "\xC3\x80 venir");
+    init_page_actions(scr);
 
     splash_init(scr);
 

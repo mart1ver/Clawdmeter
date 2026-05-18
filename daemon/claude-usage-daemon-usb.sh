@@ -369,13 +369,35 @@ configure_port() {
     sleep 2
 }
 
-# Spawn a child shell that reads firmware → host lines on FD 3 (inherited)
-# and touches the flag file when the firmware asks for an immediate poll.
-# Substring match on '"req":"poll"' is enough — no other firmware message
-# carries that key.
+ACTIONS_DIR="$HOME/.config/clawdmeter"
+
+# Spawn a child shell that reads firmware → host lines on FD 3 (inherited).
+# Two firmware → host message types:
+#   {"req":"poll"}   → touch $REQ_FLAG (main loop forces an API poll)
+#   {"action":N}     → fork-and-run $ACTIONS_DIR/actionN.sh in background
 start_reader() {
     rm -f "$REQ_FLAG"
-    bash -c "while IFS= read -r l; do case \"\$l\" in *'\"req\":\"poll\"'*) touch '$REQ_FLAG' ;; esac; done <&3" &
+    bash -c "
+        while IFS= read -r l; do
+            case \"\$l\" in
+                *'\"req\":\"poll\"'*)
+                    touch '$REQ_FLAG'
+                    ;;
+                *'\"action\":'*)
+                    n=\$(echo \"\$l\" | grep -oE '\"action\":[0-9]+' | grep -oE '[0-9]+')
+                    if [ -n \"\$n\" ]; then
+                        script=\"$ACTIONS_DIR/action\$n.sh\"
+                        if [ -x \"\$script\" ]; then
+                            echo \"[\$(date '+%H:%M:%S')] Action \$n: launching \$script\"
+                            bash \"\$script\" &
+                        else
+                            echo \"[\$(date '+%H:%M:%S')] Action \$n: \$script not found or not executable\"
+                        fi
+                    fi
+                    ;;
+            esac
+        done <&3
+    " &
     READER_PID=$!
 }
 
