@@ -615,8 +615,8 @@ static void init_page_actions(lv_obj_t* scr) {
         COL_ACCENT, NEON_CYAN, COL_ACCENT,
     };
     const char* labels[6] = {
-        "ACTION 1", "ACTION 2", "ACTION 3",
-        "ACTION 4", "ACTION 5", "ACTION 6",
+        "LOCK",  "SCREEN", "TERMINAL",
+        "VOL +", "VOL -",  "MUTE",
     };
 
     for (int i = 0; i < 6; i++) {
