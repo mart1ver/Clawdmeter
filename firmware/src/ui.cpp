@@ -352,12 +352,12 @@ static void init_page_bitcoin(lv_obj_t* scr) {
     lv_obj_set_style_text_color(btc_change_label, COL_DIM, 0);
     lv_obj_align(btc_change_label, LV_ALIGN_RIGHT_MID, -8, 0);
 
-    // Chart: daily history over 6 months (180 days)
+    // Chart: 30 downsampled points covering 6 months
     btc_chart = lv_chart_create(page_bitcoin);
     lv_obj_set_pos(btc_chart, MARGIN, 62);
     lv_obj_set_size(btc_chart, CONTENT_W, 140);
     lv_chart_set_type(btc_chart, LV_CHART_TYPE_LINE);
-    lv_chart_set_point_count(btc_chart, 180);
+    lv_chart_set_point_count(btc_chart, 20);
     lv_chart_set_update_mode(btc_chart, LV_CHART_UPDATE_MODE_SHIFT);
     lv_obj_set_style_bg_color(btc_chart, COL_PANEL, 0);
     lv_obj_set_style_bg_opa(btc_chart, LV_OPA_COVER, 0);
@@ -584,7 +584,7 @@ void ui_update_bitcoin_data(const BitcoinData* data) {
     }
 
     // Append current price at the end if there's room.
-    if (data->history_count < 180) {
+    if (data->history_count < 20) {
         lv_chart_set_next_value(btc_chart, btc_series, data->price);
     }
 }

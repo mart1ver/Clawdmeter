@@ -144,7 +144,7 @@ static bool parse_json(const char* json, UsageData* out) {
             JsonArray hist = b["history"].as<JsonArray>();
             btc_data.history_count = 0;
             for (JsonVariant v : hist) {
-                if (btc_data.history_count >= 48) break;
+                if (btc_data.history_count >= 20) break;
                 btc_data.price_history[btc_data.history_count++] = v.as<int>();
             }
         }

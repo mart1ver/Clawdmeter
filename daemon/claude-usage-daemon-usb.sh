@@ -287,11 +287,13 @@ push_bitcoin_if_due() {
         fi
     fi
 
-    # Build the history array as JSON: emit oldest-to-newest (ring buffer order).
+    # Build the history array as JSON: downsample 180 → 20 points (1 every 9 days)
+    # to keep payload well under ESP32 UART buffer limit (256 bytes default).
     local hist_json="["
     local count=0
-    for i in {0..179}; do
-        local idx=$(( (BTC_HISTORY_IDX + i) % 180 ))
+    for i in {0..19}; do
+        local src_idx=$(( i * 9 ))
+        local idx=$(( (BTC_HISTORY_IDX + src_idx) % 180 ))
         if [ -n "${BTC_HISTORY[$idx]}" ] && [ "${BTC_HISTORY[$idx]}" -gt 0 ]; then
             [ $count -gt 0 ] && hist_json="$hist_json,"
             hist_json="$hist_json${BTC_HISTORY[$idx]}"
