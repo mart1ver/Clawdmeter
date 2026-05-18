@@ -651,20 +651,22 @@ static void init_chrome(lv_obj_t* scr) {
     lv_obj_align(lbl_model, LV_ALIGN_TOP_RIGHT, -MARGIN, TITLE_Y + 4);
     lv_obj_add_flag(lbl_model, LV_OBJ_FLAG_HIDDEN);
 
-    // Button 0 (Usage) hosts the animated Claude thumbnail instead of a
-    // static icon. The other three get their Lucide icons normally.
+    // Each nav button hosts its own animated Claude thumbnail. Distinct
+    // animations give each tab its own personality:
+    //   0 Usage   → "idle breathe"     (calm, default)
+    //   1 System  → "work coding"      (Claude typing on a keyboard)
+    //   2 Bitcoin → "dance bounce dj"  (the trading dance)
+    //   3 Actions → "expression wink"  (ready to fire scripts)
+    const char* anims[4] = {
+        "idle breathe", "work coding", "dance bounce dj", "expression wink",
+    };
     for (int i = 0; i < 4; i++) {
         int x = MARGIN + i * (NAV_BTN_W + NAV_GAP);
-        if (i == 0) {
-            nav_btns[i] = make_nav_button_shell(scr, x, NAV_Y);
-            // Initial bg = NEON_DEEP (inactive). update_nav_active() retints
-            // when the user navigates to/away from the Usage screen.
-            clawd_thumb_create(nav_btns[i], 2, lv_color_to_u16(NEON_DEEP));
-            lv_obj_t* thumb = clawd_thumb_canvas();
-            if (thumb) lv_obj_center(thumb);
-        } else {
-            nav_btns[i] = make_nav_button(scr, x, NAV_Y, &nav_icon_dscs[i]);
-        }
+        nav_btns[i] = make_nav_button_shell(scr, x, NAV_Y);
+        clawd_thumb_create(i, nav_btns[i], 2, lv_color_to_u16(NEON_DEEP));
+        clawd_thumb_set_animation(i, anims[i]);
+        lv_obj_t* thumb = clawd_thumb_canvas(i);
+        if (thumb) lv_obj_center(thumb);
         lv_obj_add_event_cb(nav_btns[i], nav_click_cb, LV_EVENT_CLICKED,
                             (void*)(intptr_t)(SCREEN_USAGE + i));
     }
@@ -934,12 +936,10 @@ static void update_nav_active(screen_t s) {
         lv_obj_set_style_bg_color(nav_btns[i], active ? NEON_BORDER : NEON_DEEP, 0);
         lv_obj_set_style_border_opa(nav_btns[i],
                                     active ? LV_OPA_COVER : LV_OPA_50, 0);
+        // Keep each thumbnail's palette[0] (its own background) in sync with
+        // its button so the 40x40 canvas doesn't show a stray black square.
+        clawd_thumb_set_bg(i, lv_color_to_u16(active ? NEON_BORDER : NEON_DEEP));
     }
-    // Keep the Clawd thumbnail's background colour in sync so palette[0]
-    // (the animation's own background) blends into the active/inactive
-    // button colour instead of showing a black 40x40 square.
-    clawd_thumb_set_bg(lv_color_to_u16(
-        (active_idx == 0) ? NEON_BORDER : NEON_DEEP));
 }
 
 static const char* title_for_screen(screen_t s) {

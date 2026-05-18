@@ -5,68 +5,90 @@
 
 #define GRID 20
 
-static int      g_cell = 2;
-static int      g_size = GRID * 2;
-static uint16_t g_bg = 0x0000;
-static uint16_t *g_buf = nullptr;
-static lv_obj_t *g_canvas = nullptr;
-static int      g_anim = 0;
-static int      g_frame = 0;
-static uint32_t g_frame_started = 0;
+typedef struct {
+    int      cell;
+    int      size;
+    uint16_t bg;
+    uint16_t *buf;
+    lv_obj_t *canvas;
+    int      anim;
+    int      frame;
+    uint32_t frame_started;
+} thumb_slot_t;
 
-static void render(void) {
-    if (!g_buf) return;
-    splash_render_thumb(g_buf, g_cell, g_anim, g_frame, g_bg);
-    if (g_canvas) lv_obj_invalidate(g_canvas);
+static thumb_slot_t g_slots[CLAWD_THUMB_SLOTS] = {};
+
+static void render(thumb_slot_t *s) {
+    if (!s->buf) return;
+    splash_render_thumb(s->buf, s->cell, s->anim, s->frame, s->bg);
+    if (s->canvas) lv_obj_invalidate(s->canvas);
 }
 
-void clawd_thumb_create(lv_obj_t *parent, int cell, uint16_t bg) {
-    g_cell = cell;
-    g_size = GRID * cell;
-    g_bg = bg;
+static thumb_slot_t* get_slot(int idx) {
+    if (idx < 0 || idx >= CLAWD_THUMB_SLOTS) return nullptr;
+    return &g_slots[idx];
+}
 
-    g_buf = (uint16_t*)heap_caps_malloc(g_size * g_size * 2, MALLOC_CAP_SPIRAM);
-    if (!g_buf) {
-        Serial.println("clawd_thumb: PSRAM alloc failed");
+void clawd_thumb_create(int slot, lv_obj_t *parent, int cell, uint16_t bg) {
+    thumb_slot_t *s = get_slot(slot);
+    if (!s) return;
+
+    s->cell = cell;
+    s->size = GRID * cell;
+    s->bg = bg;
+
+    s->buf = (uint16_t*)heap_caps_malloc(s->size * s->size * 2, MALLOC_CAP_SPIRAM);
+    if (!s->buf) {
+        Serial.printf("clawd_thumb[%d]: PSRAM alloc failed\n", slot);
         return;
     }
 
-    g_canvas = lv_canvas_create(parent);
-    lv_canvas_set_buffer(g_canvas, g_buf, g_size, g_size, LV_COLOR_FORMAT_RGB565);
+    s->canvas = lv_canvas_create(parent);
+    lv_canvas_set_buffer(s->canvas, s->buf, s->size, s->size, LV_COLOR_FORMAT_RGB565);
 
-    // Pick "idle breathe" by default — friendly, slow, low-distraction.
+    // Default animation: "idle breathe". Caller can override via set_animation.
     int idx = splash_find_anim_by_name("idle breathe");
-    g_anim = (idx >= 0) ? idx : 0;
-    g_frame = 0;
-    g_frame_started = millis();
-    render();
+    s->anim = (idx >= 0) ? idx : 0;
+    s->frame = 0;
+    s->frame_started = millis();
+    render(s);
 }
 
-void clawd_thumb_set_bg(uint16_t bg) {
-    if (g_bg == bg) return;
-    g_bg = bg;
-    render();
+void clawd_thumb_set_bg(int slot, uint16_t bg) {
+    thumb_slot_t *s = get_slot(slot);
+    if (!s || s->bg == bg) return;
+    s->bg = bg;
+    render(s);
 }
 
-void clawd_thumb_set_animation(const char *name) {
+void clawd_thumb_set_animation(int slot, const char *name) {
+    thumb_slot_t *s = get_slot(slot);
+    if (!s) return;
     int idx = splash_find_anim_by_name(name);
     if (idx < 0) return;
-    g_anim = idx;
-    g_frame = 0;
-    g_frame_started = millis();
-    render();
+    s->anim = idx;
+    s->frame = 0;
+    s->frame_started = millis();
+    render(s);
 }
 
 void clawd_thumb_tick(void) {
-    if (!g_canvas) return;
-    int nframes = splash_anim_frame_count(g_anim);
-    if (nframes <= 0) return;
-    uint16_t hold = splash_anim_hold(g_anim, g_frame);
-    if (millis() - g_frame_started >= hold) {
-        g_frame = (g_frame + 1) % nframes;
-        g_frame_started = millis();
-        render();
+    uint32_t now = millis();
+    for (int i = 0; i < CLAWD_THUMB_SLOTS; i++) {
+        thumb_slot_t *s = &g_slots[i];
+        if (!s->canvas) continue;
+        int nframes = splash_anim_frame_count(s->anim);
+        if (nframes <= 0) continue;
+        uint16_t hold = splash_anim_hold(s->anim, s->frame);
+        if (now - s->frame_started >= hold) {
+            s->frame = (s->frame + 1) % nframes;
+            s->frame_started = now;
+            render(s);
+        }
     }
 }
 
-lv_obj_t* clawd_thumb_canvas(void) { return g_canvas; }
+lv_obj_t* clawd_thumb_canvas(int slot) {
+    thumb_slot_t *s = get_slot(slot);
+    return s ? s->canvas : nullptr;
+}
