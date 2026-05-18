@@ -383,7 +383,7 @@ static void init_page_bitcoin(lv_obj_t* scr) {
     // ====== Header bar: ₿ logo + label + price + change ======
     lv_obj_t* header = lv_obj_create(page_bitcoin);
     lv_obj_set_pos(header, MARGIN, 0);
-    lv_obj_set_size(header, CONTENT_W, 58);
+    lv_obj_set_size(header, CONTENT_W, 50);
     lv_obj_set_style_bg_color(header, BTC_DEEP, 0);
     lv_obj_set_style_bg_opa(header, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(header, 4, 0);
@@ -396,7 +396,7 @@ static void init_page_bitcoin(lv_obj_t* scr) {
 
     // ₿ Bitcoin symbol — big orange B in a square badge
     lv_obj_t* btc_badge = lv_obj_create(header);
-    lv_obj_set_size(btc_badge, 42, 42);
+    lv_obj_set_size(btc_badge, 38, 38);
     lv_obj_align(btc_badge, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_style_bg_color(btc_badge, BTC_ORANGE, 0);
     lv_obj_set_style_bg_opa(btc_badge, LV_OPA_COVER, 0);
@@ -408,7 +408,7 @@ static void init_page_bitcoin(lv_obj_t* scr) {
 
     lv_obj_t* btc_symbol = lv_label_create(btc_badge);
     lv_label_set_text(btc_symbol, "B");   // Ascii B as bitcoin glyph (font safe)
-    lv_obj_set_style_text_font(btc_symbol, &font_styrene_28, 0);
+    lv_obj_set_style_text_font(btc_symbol, &font_styrene_24, 0);
     lv_obj_set_style_text_color(btc_symbol, BTC_DEEP, 0);
     lv_obj_center(btc_symbol);
 
@@ -441,8 +441,8 @@ static void init_page_bitcoin(lv_obj_t* scr) {
 
     // ====== Chart: 6-month history, neon orange line ======
     btc_chart = lv_chart_create(page_bitcoin);
-    lv_obj_set_pos(btc_chart, MARGIN, 64);
-    lv_obj_set_size(btc_chart, CONTENT_W, 130);
+    lv_obj_set_pos(btc_chart, MARGIN, 54);
+    lv_obj_set_size(btc_chart, CONTENT_W, 116);
     lv_chart_set_type(btc_chart, LV_CHART_TYPE_LINE);
     lv_chart_set_point_count(btc_chart, 20);
     lv_chart_set_update_mode(btc_chart, LV_CHART_UPDATE_MODE_SHIFT);
@@ -468,10 +468,10 @@ static void init_page_bitcoin(lv_obj_t* scr) {
 
     btc_series = lv_chart_add_series(btc_chart, BTC_ORANGE, LV_CHART_AXIS_PRIMARY_Y);
 
-    // ====== Footer: 3 stat cards (HIGH / LOW / RANGE) ======
+    // ====== Footer: 3 stat cards (HIGH / LOW / POSITION) ======
     int card_gap = 6;
     int card_w = (CONTENT_W - 2 * card_gap) / 3;
-    int card_y = 198;
+    int card_y = 174;
 
     make_btc_stat_card(page_bitcoin, MARGIN, card_y, card_w,
                        "6M HIGH", &btc_high_value, BTC_CYAN);
@@ -666,15 +666,15 @@ void ui_update_bitcoin_data(const BitcoinData* data) {
 
     // ----- 24h change with arrow indicator -----
     lv_color_t change_color = COL_DIM;
-    const char* arrow = "-";
+    const char* arrow = "=";
     int change_bps = data->price_24h_change_bps;
     if (change_bps > 0) {
         change_color = COL_GREEN;
-        arrow = LV_SYMBOL_UP;
+        arrow = "^";   // up triangle ASCII
         snprintf(buf, sizeof(buf), "+%d.%02d%%", change_bps / 100, change_bps % 100);
     } else if (change_bps < 0) {
         change_color = COL_RED;
-        arrow = LV_SYMBOL_DOWN;
+        arrow = "v";   // down marker ASCII
         snprintf(buf, sizeof(buf), "%d.%02d%%", change_bps / 100, (-change_bps) % 100);
     } else {
         snprintf(buf, sizeof(buf), "0.00%%");
