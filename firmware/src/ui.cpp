@@ -176,16 +176,21 @@ static lv_obj_t* make_bar(lv_obj_t* parent, int x, int y, int w, int h) {
     return bar;
 }
 
+// Model pill (top-right of Usage screen) — futuristic neon style:
+// deep dark fill, cyan neon border, cyan text. Matches the rest of the UI.
 static lv_obj_t* make_pill(lv_obj_t* parent, const char* text) {
     lv_obj_t* lbl = lv_label_create(parent);
     lv_label_set_text(lbl, text);
-    lv_obj_set_style_text_font(lbl, &font_styrene_20, 0);
-    lv_obj_set_style_text_color(lbl, COL_TEXT, 0);
-    lv_obj_set_style_bg_color(lbl, COL_BAR_BG, 0);
+    lv_obj_set_style_text_font(lbl, &font_styrene_16, 0);
+    lv_obj_set_style_text_color(lbl, NEON_CYAN, 0);
+    lv_obj_set_style_bg_color(lbl, NEON_DEEP, 0);
     lv_obj_set_style_bg_opa(lbl, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(lbl, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_pad_left(lbl, 12, 0);
-    lv_obj_set_style_pad_right(lbl, 12, 0);
+    lv_obj_set_style_radius(lbl, 4, 0);
+    lv_obj_set_style_border_color(lbl, NEON_CYAN, 0);
+    lv_obj_set_style_border_width(lbl, 1, 0);
+    lv_obj_set_style_border_opa(lbl, LV_OPA_70, 0);
+    lv_obj_set_style_pad_left(lbl, 10, 0);
+    lv_obj_set_style_pad_right(lbl, 10, 0);
     lv_obj_set_style_pad_top(lbl, 4, 0);
     lv_obj_set_style_pad_bottom(lbl, 4, 0);
     return lbl;
@@ -193,14 +198,19 @@ static lv_obj_t* make_pill(lv_obj_t* parent, const char* text) {
 
 // Empty nav-button shell (icon is added by the caller — usually an
 // lv_image, but the Usage button hosts the animated Claude canvas).
+// Styled to match the rest of the futuristic neon UI: deep dark bg
+// with subtle cyan border. update_nav_active() bumps border opacity
+// and tints the bg when the button represents the current screen.
 static lv_obj_t* make_nav_button_shell(lv_obj_t* parent, int x, int y) {
     lv_obj_t* btn = lv_obj_create(parent);
     lv_obj_set_pos(btn, x, y);
     lv_obj_set_size(btn, NAV_BTN_W, NAV_BTN_H);
-    lv_obj_set_style_bg_color(btn, COL_BAR_BG, 0);
+    lv_obj_set_style_bg_color(btn, NEON_DEEP, 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(btn, 10, 0);
-    lv_obj_set_style_border_width(btn, 0, 0);
+    lv_obj_set_style_radius(btn, 4, 0);
+    lv_obj_set_style_border_color(btn, NEON_CYAN, 0);
+    lv_obj_set_style_border_width(btn, 1, 0);
+    lv_obj_set_style_border_opa(btn, LV_OPA_50, 0);
     lv_obj_set_style_pad_all(btn, 0, 0);
     lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
     return btn;
@@ -647,8 +657,9 @@ static void init_chrome(lv_obj_t* scr) {
         int x = MARGIN + i * (NAV_BTN_W + NAV_GAP);
         if (i == 0) {
             nav_btns[i] = make_nav_button_shell(scr, x, NAV_Y);
-            // SCREEN_USAGE is the default boot screen → starts active.
-            clawd_thumb_create(nav_btns[i], 2, lv_color_to_u16(COL_NAV_ACTIVE));
+            // Initial bg = NEON_DEEP (inactive). update_nav_active() retints
+            // when the user navigates to/away from the Usage screen.
+            clawd_thumb_create(nav_btns[i], 2, lv_color_to_u16(NEON_DEEP));
             lv_obj_t* thumb = clawd_thumb_canvas();
             if (thumb) lv_obj_center(thumb);
         } else {
@@ -917,14 +928,18 @@ static void nav_click_cb(lv_event_t* e) {
 static void update_nav_active(screen_t s) {
     int active_idx = (int)s - (int)SCREEN_USAGE;
     for (int i = 0; i < 4; i++) {
-        lv_color_t bg = (i == active_idx) ? COL_NAV_ACTIVE : COL_BAR_BG;
-        lv_obj_set_style_bg_color(nav_btns[i], bg, 0);
+        // Active: cyan border at full opacity, slightly brighter fill.
+        // Inactive: deep dark bg with half-opacity cyan border.
+        bool active = (i == active_idx);
+        lv_obj_set_style_bg_color(nav_btns[i], active ? NEON_BORDER : NEON_DEEP, 0);
+        lv_obj_set_style_border_opa(nav_btns[i],
+                                    active ? LV_OPA_COVER : LV_OPA_50, 0);
     }
     // Keep the Clawd thumbnail's background colour in sync so palette[0]
     // (the animation's own background) blends into the active/inactive
     // button colour instead of showing a black 40x40 square.
     clawd_thumb_set_bg(lv_color_to_u16(
-        (active_idx == 0) ? COL_NAV_ACTIVE : COL_BAR_BG));
+        (active_idx == 0) ? NEON_BORDER : NEON_DEEP));
 }
 
 static const char* title_for_screen(screen_t s) {
