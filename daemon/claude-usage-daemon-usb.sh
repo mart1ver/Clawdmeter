@@ -516,6 +516,8 @@ while true; do
         # Force re-push of model on reconnect.
         LAST_MODEL_MTIME=0
         LAST_MODEL=""
+        # Force re-push of Bitcoin data on reconnect (firmware may have rebooted).
+        LAST_BTC_DAY=0
         # Initialize Bitcoin history once at startup.
         if [ $BTC_HISTORY_INIT -eq 0 ]; then
             init_bitcoin_history
@@ -548,6 +550,8 @@ while true; do
         rm -f "$REQ_FLAG"
         log "Firmware requested immediate poll"
         LAST_API_POLL=0
+        # Also re-push Bitcoin data — firmware likely just booted
+        LAST_BTC_DAY=0
     fi
 
     now=$(date +%s)
