@@ -4,8 +4,9 @@
 Outputs firmware/src/nav_pictograms.h with 3 small 20x20 animated icons that
 match the nav buttons' meaning:
   - system   : 5 vertical EQ bars pulsing (cyan + dim cyan top)
-  - bitcoin  : Bitcoin ₿ glyph in orange that pulses
-  - actions  : lightning bolt cycling cyan → white flash → orange flash
+  - bitcoin  : Bitcoin B-with-stems glyph in orange that pulses
+  - actions  : 3x2 grid of dots, one bright at a time (matches the 6 action
+               buttons on the Actions tab, cycles cyan/orange)
 
 Re-run after editing: python3 tools/gen_nav_pictograms.py
 """
@@ -44,7 +45,7 @@ def gen_system_eq():
     ]
 
     # Each row = one frame, each value = bar height (1..18 cells).
-    # 6 frames staggered so each bar peaks at a different time → smooth loop.
+    # 6 frames staggered so each bar peaks at a different time -> smooth loop.
     heights_per_frame = [
         [10, 14,  6, 12,  8],
         [12, 11,  8, 14,  6],
@@ -77,152 +78,123 @@ def gen_system_eq():
 
 
 # ----------------------------------------------------------------------------
-# 2. Bitcoin: stylized ₿ glyph with pulsing brightness
+# 2. Bitcoin: stylized B-with-stems glyph that pulses
+# ----------------------------------------------------------------------------
+# Classic Bitcoin mark: letter B with two short vertical strokes extending
+# above the top bar AND below the bottom bar. The stems align with the
+# B's right-bump verticals so the eye reads them as one continuous shape.
+# Designed to read clearly at 40x40 (cell=2).
 # ----------------------------------------------------------------------------
 def gen_bitcoin_coin():
     palette = [
         (0, 0, 0),          # 0 bg
         (0xf7, 0x93, 0x1a), # 1 bright BTC orange
         (0xa0, 0x5b, 0x10), # 2 dim orange (shadow)
-        (0xff, 0xc8, 0x70), # 3 light orange (highlight on pulse)
+        (0xff, 0xc8, 0x70), # 3 light orange (highlight)
         (0xff, 0xff, 0xff), # 4 white
     ]
 
-    # Hand-drawn ₿ glyph: a filled rounded square containing a white B with
-    # two short vertical strokes sticking out of the top and bottom (the
-    # Bitcoin stem). Designed to read clearly at 40x40 px (cell=2).
-    #
-    # Legend: . = bg, # = orange fill, _ = bg cutout (forms the B's negative)
+    # Hand-drawn glyph. # = orange fill, . = bg.
+    # Structure:
+    #   y=3-4   : top stems (2-cell wide x 2-cell tall pairs)
+    #   y=5-6   : top horizontal bar of B
+    #   y=7-8   : cut-outs between bars (left stem + middle stem + right bump)
+    #   y=9-10  : middle horizontal bar of B
+    #   y=11-12 : same cut-outs
+    #   y=13-14 : bottom horizontal bar of B
+    #   y=15-16 : bottom stems (mirror of top)
     GLYPH = [
-        "....................",
-        "....................",
-        "......##.....##.....",
-        "......##.....##.....",
-        "....##############..",
-        "....##############..",
-        "....####.....#####..",
-        "....####.....#####..",
-        "....####.....#####..",
-        "....##############..",
-        "....##############..",
-        "....####.....#####..",
-        "....####.....#####..",
-        "....####.....#####..",
-        "....##############..",
-        "....##############..",
-        "......##.....##.....",
-        "......##.....##.....",
-        "....................",
-        "....................",
+        "....................",  # y=0
+        "....................",  # y=1
+        "....................",  # y=2
+        "........##...##.....",  # y=3  top stems
+        "........##...##.....",  # y=4
+        "....##############..",  # y=5  top bar
+        "....##############..",  # y=6
+        "....###...##....###.",  # y=7  cuts + stem visible
+        "....###...##....###.",  # y=8
+        "....##############..",  # y=9  middle bar
+        "....##############..",  # y=10
+        "....###...##....###.",  # y=11
+        "....###...##....###.",  # y=12
+        "....##############..",  # y=13 bottom bar
+        "....##############..",  # y=14
+        "........##...##.....",  # y=15 bottom stems
+        "........##...##.....",  # y=16
+        "....................",  # y=17
+        "....................",  # y=18
+        "....................",  # y=19
     ]
 
-    def render(glyph_lines, fill_color, outline_color=None):
+    def render(lines, color):
         g = [[0] * GRID for _ in range(GRID)]
-        for y, line in enumerate(glyph_lines):
-            for x, ch in enumerate(line):
-                if ch == '#':
-                    g[y][x] = fill_color
-        # Optional 1-cell outline (dim orange) around the filled area
-        if outline_color is not None:
-            outline = [row[:] for row in g]
-            for y in range(GRID):
-                for x in range(GRID):
-                    if g[y][x] == 0:
-                        # Touches a filled cell horizontally or vertically?
-                        for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                            ny, nx = y + dy, x + dx
-                            if 0 <= ny < GRID and 0 <= nx < GRID and g[ny][nx] == fill_color:
-                                outline[y][x] = outline_color
-                                break
-            g = outline
-        return g
-
-    # 6 frames: smooth pulse cycle.
-    # bright → very bright → bright → dim → bright → very bright
-    frames = [
-        render(GLYPH, fill_color=1),              # bright
-        render(GLYPH, fill_color=3),              # peak (light highlight)
-        render(GLYPH, fill_color=1),              # bright
-        render(GLYPH, fill_color=2),              # dim shadow
-        render(GLYPH, fill_color=1),              # bright
-        render(GLYPH, fill_color=3),              # peak again
-    ]
-    holds = [240, 100, 240, 200, 240, 100]
-    return palette, frames, holds
-
-
-# ----------------------------------------------------------------------------
-# 3. Actions: lightning bolt with electric flash cycle
-# ----------------------------------------------------------------------------
-def gen_actions_bolt():
-    palette = [
-        (0, 0, 0),          # 0 bg
-        (0x00, 0xD9, 0xFF), # 1 bright cyan
-        (0x00, 0x6C, 0x80), # 2 dim cyan
-        (0xf7, 0x93, 0x1a), # 3 orange flash
-        (0xff, 0xff, 0xff), # 4 white flash core
-    ]
-
-    # Classic Z-shaped lightning bolt (centered, fills most of the canvas).
-    BOLT = [
-        "....................",
-        "..........#####.....",
-        ".........#####......",
-        "........#####.......",
-        ".......#####........",
-        "......#####.........",
-        ".....#####..........",
-        "....##########......",
-        "....##########......",
-        "...##########.......",
-        "...........###......",
-        "..........###.......",
-        ".........###........",
-        "........###.........",
-        ".......###..........",
-        "......###...........",
-        ".....###............",
-        "....................",
-        "....................",
-        "....................",
-    ]
-
-    def make_bolt(color):
-        g = [[0] * GRID for _ in range(GRID)]
-        for y, line in enumerate(BOLT):
+        for y, line in enumerate(lines):
             for x, ch in enumerate(line):
                 if ch == '#':
                     g[y][x] = color
         return g
 
-    def add_sparks(g, color, positions):
-        for (px, py) in positions:
-            if 0 <= py < GRID and 0 <= px < GRID:
-                g[py][px] = color
-        return g
+    # 6 frames: pulse cycle (bright -> highlight -> bright -> dim -> bright -> highlight)
+    frames = [
+        render(GLYPH, 1),  # bright
+        render(GLYPH, 3),  # light highlight
+        render(GLYPH, 1),  # bright
+        render(GLYPH, 2),  # dim shadow
+        render(GLYPH, 1),  # bright
+        render(GLYPH, 3),  # highlight
+    ]
+    holds = [260, 120, 260, 200, 260, 120]
+    return palette, frames, holds
+
+
+# ----------------------------------------------------------------------------
+# 3. Actions: 3x2 grid of dots, one bright at a time
+# ----------------------------------------------------------------------------
+# Directly maps to the 6 buttons on the Actions tab. At any moment one dot
+# is "active" (bright); the others are dim. Sequences through all 6 over
+# time like a running-light / step sequencer. Conveys "buttons / trigger"
+# without needing a literal icon.
+# ----------------------------------------------------------------------------
+def gen_actions_grid():
+    palette = [
+        (0, 0, 0),          # 0 bg
+        (0x00, 0xD9, 0xFF), # 1 bright cyan (active)
+        (0x00, 0x4a, 0x60), # 2 dim cyan (idle)
+        (0xf7, 0x93, 0x1a), # 3 bright orange (alt active)
+        (0xa8, 0x4d, 0x2c), # 4 dim orange (alt idle)
+    ]
+
+    # 3 columns x 2 rows. Each dot is a 4x5 rectangle.
+    DOT_W, DOT_H = 4, 5
+    COL_X = [1, 8, 15]      # left edge of each column
+    ROW_Y = [3, 12]         # top edge of each row
+
+    # Per-dot color scheme matches the Actions tab itself:
+    # cyan/orange alternating (1=cyan,2=orange,3=cyan,4=orange,...)
+    DOT_BRIGHT = [1, 3, 1, 3, 1, 3]
+    DOT_DIM    = [2, 4, 2, 4, 2, 4]
+
+    def draw_dot(g, col, row, color):
+        x0 = COL_X[col]
+        y0 = ROW_Y[row]
+        for dy in range(DOT_H):
+            for dx in range(DOT_W):
+                y, x = y0 + dy, x0 + dx
+                if 0 <= y < GRID and 0 <= x < GRID:
+                    g[y][x] = color
+
+    # Reading order: top-row left-to-right, then bottom-row left-to-right.
+    sequence = [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)]
 
     frames = []
-    # Frame 0: calm cyan bolt
-    frames.append(make_bolt(1))
-    # Frame 1: cyan bolt + tiny sparks in corners
-    g = make_bolt(1)
-    add_sparks(g, 1, [(2, 2), (17, 2), (2, 17), (17, 17)])
-    frames.append(g)
-    # Frame 2: white flash core
-    frames.append(make_bolt(4))
-    # Frame 3: orange flash with white sparks around
-    g = make_bolt(3)
-    add_sparks(g, 4, [(1, 4), (18, 4), (1, 15), (18, 15), (10, 0), (10, 19)])
-    frames.append(g)
-    # Frame 4: dim cyan bolt (afterglow)
-    frames.append(make_bolt(2))
-    # Frame 5: back to bright cyan with bigger sparks
-    g = make_bolt(1)
-    add_sparks(g, 4, [(3, 1), (16, 1), (3, 18), (16, 18)])
-    frames.append(g)
+    for active_idx in range(6):
+        g = [[0] * GRID for _ in range(GRID)]
+        for i, (col, row) in enumerate(sequence):
+            color = DOT_BRIGHT[i] if i == active_idx else DOT_DIM[i]
+            draw_dot(g, col, row, color)
+        frames.append(g)
 
-    # Variable hold times: most of the cycle is "calm cyan", flashes are short.
-    holds = [400, 120, 80, 100, 200, 150]
+    holds = [180] * 6
     return palette, frames, holds
 
 
@@ -249,10 +221,10 @@ def main():
     out = []
     out.append("#pragma once")
     out.append("// ============================================================")
-    out.append("// Nav button pictograms — generated by tools/gen_nav_pictograms.py")
+    out.append("// Nav button pictograms - generated by tools/gen_nav_pictograms.py")
     out.append("// 20x20 indexed-palette frames, same layout as splash anims so")
     out.append("// clawd_thumb can render them with the existing pipeline.")
-    out.append("// Do not edit by hand — re-run the generator.")
+    out.append("// Do not edit by hand - re-run the generator.")
     out.append("// ============================================================")
     out.append("#include <stdint.h>")
     out.append("")
@@ -270,15 +242,15 @@ def main():
     pictograms = []
 
     pal, fr, hl = gen_system_eq()
-    emit_pictogram(out, "system_eq", "System — equalizer bars", pal, fr, hl)
+    emit_pictogram(out, "system_eq", "System - equalizer bars", pal, fr, hl)
     pictograms.append(("system eq", "system_eq", len(fr)))
 
     pal, fr, hl = gen_bitcoin_coin()
-    emit_pictogram(out, "bitcoin_coin", "Bitcoin — pulsing ₿ glyph", pal, fr, hl)
+    emit_pictogram(out, "bitcoin_coin", "Bitcoin - pulsing B glyph", pal, fr, hl)
     pictograms.append(("bitcoin coin", "bitcoin_coin", len(fr)))
 
-    pal, fr, hl = gen_actions_bolt()
-    emit_pictogram(out, "actions_bolt", "Actions — lightning bolt", pal, fr, hl)
+    pal, fr, hl = gen_actions_grid()
+    emit_pictogram(out, "actions_bolt", "Actions - 3x2 dot sequencer", pal, fr, hl)
     pictograms.append(("actions bolt", "actions_bolt", len(fr)))
 
     out.append("")
