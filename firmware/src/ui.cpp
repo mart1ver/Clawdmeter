@@ -86,8 +86,12 @@ static sys_cell_t sc_cpu, sc_ram, sc_disk, sc_temp, sc_gpu, sc_net;
 // ---- Bitcoin page widgets ----
 static lv_obj_t* btc_price_label;
 static lv_obj_t* btc_change_label;
+static lv_obj_t* btc_arrow_label;       // ▲ or ▼ trend indicator
 static lv_obj_t* btc_chart;
 static lv_chart_series_t* btc_series;
+static lv_obj_t* btc_high_value;        // 6M high
+static lv_obj_t* btc_low_value;         // 6M low
+static lv_obj_t* btc_range_value;       // current position in 6M range (%)
 
 // ---- Battery indicator + logo (kept for API symmetry; PMU is stubbed) ----
 static lv_obj_t* battery_img;
@@ -332,42 +336,149 @@ static void init_page_system(lv_obj_t* scr) {
     make_sys_cell(page_system, x_right, 2 * row, "R\xC3\xA9seau", &sc_net);
 }
 
-// ---- Bitcoin page (price chart) ----
+// ---- Bitcoin page (futuristic neon style) ----
+
+// Bitcoin brand color: official orange #F7931A
+#define BTC_ORANGE  lv_color_hex(0xF7931A)
+#define BTC_CYAN    lv_color_hex(0x00D9FF)   // neon cyan accent
+#define BTC_DEEP    lv_color_hex(0x0a0a14)   // very dark blue-black panel
+#define BTC_BORDER  lv_color_hex(0x1a3a4a)   // subtle cyan-tinted border
+#define BTC_GRID    lv_color_hex(0x162028)   // chart grid line
+
+// Build a small stat card with a label + value (used for HIGH/LOW/RANGE)
+static lv_obj_t* make_btc_stat_card(lv_obj_t* parent, int x, int y, int w,
+                                    const char* label_text, lv_obj_t** out_value,
+                                    lv_color_t accent_color) {
+    lv_obj_t* card = lv_obj_create(parent);
+    lv_obj_set_pos(card, x, y);
+    lv_obj_set_size(card, w, 46);
+    lv_obj_set_style_bg_color(card, BTC_DEEP, 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, 4, 0);
+    lv_obj_set_style_border_color(card, accent_color, 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_border_opa(card, LV_OPA_60, 0);
+    lv_obj_set_style_pad_all(card, 6, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    lv_obj_t* lbl = lv_label_create(card);
+    lv_label_set_text(lbl, label_text);
+    lv_obj_set_style_text_font(lbl, &font_styrene_12, 0);
+    lv_obj_set_style_text_color(lbl, accent_color, 0);
+    lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    *out_value = lv_label_create(card);
+    lv_label_set_text(*out_value, "---");
+    lv_obj_set_style_text_font(*out_value, &font_styrene_16, 0);
+    lv_obj_set_style_text_color(*out_value, COL_TEXT, 0);
+    lv_obj_align(*out_value, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+
+    return card;
+}
 
 static void init_page_bitcoin(lv_obj_t* scr) {
     page_bitcoin = make_page(scr);
 
-    // Top section: price + 24h change
-    lv_obj_t* price_panel = make_panel(page_bitcoin, MARGIN, 0, CONTENT_W, 50);
+    // ====== Header bar: ₿ logo + label + price + change ======
+    lv_obj_t* header = lv_obj_create(page_bitcoin);
+    lv_obj_set_pos(header, MARGIN, 0);
+    lv_obj_set_size(header, CONTENT_W, 58);
+    lv_obj_set_style_bg_color(header, BTC_DEEP, 0);
+    lv_obj_set_style_bg_opa(header, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(header, 4, 0);
+    lv_obj_set_style_border_color(header, BTC_ORANGE, 0);
+    lv_obj_set_style_border_width(header, 1, 0);
+    lv_obj_set_style_border_opa(header, LV_OPA_70, 0);
+    lv_obj_set_style_pad_all(header, 6, 0);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(header, LV_OBJ_FLAG_EVENT_BUBBLE);
 
-    btc_price_label = lv_label_create(price_panel);
+    // ₿ Bitcoin symbol — big orange B in a square badge
+    lv_obj_t* btc_badge = lv_obj_create(header);
+    lv_obj_set_size(btc_badge, 42, 42);
+    lv_obj_align(btc_badge, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(btc_badge, BTC_ORANGE, 0);
+    lv_obj_set_style_bg_opa(btc_badge, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(btc_badge, 6, 0);
+    lv_obj_set_style_border_width(btc_badge, 0, 0);
+    lv_obj_set_style_pad_all(btc_badge, 0, 0);
+    lv_obj_clear_flag(btc_badge, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(btc_badge, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    lv_obj_t* btc_symbol = lv_label_create(btc_badge);
+    lv_label_set_text(btc_symbol, "B");   // Ascii B as bitcoin glyph (font safe)
+    lv_obj_set_style_text_font(btc_symbol, &font_styrene_28, 0);
+    lv_obj_set_style_text_color(btc_symbol, BTC_DEEP, 0);
+    lv_obj_center(btc_symbol);
+
+    // "BITCOIN / USD" label
+    lv_obj_t* lbl_pair = lv_label_create(header);
+    lv_label_set_text(lbl_pair, "BTC/USD");
+    lv_obj_set_style_text_font(lbl_pair, &font_styrene_12, 0);
+    lv_obj_set_style_text_color(lbl_pair, BTC_CYAN, 0);
+    lv_obj_align(lbl_pair, LV_ALIGN_LEFT_MID, 50, -10);
+
+    // Price
+    btc_price_label = lv_label_create(header);
     lv_label_set_text(btc_price_label, "$-----");
-    lv_obj_set_style_text_font(btc_price_label, &font_styrene_28, 0);
+    lv_obj_set_style_text_font(btc_price_label, &font_styrene_24, 0);
     lv_obj_set_style_text_color(btc_price_label, COL_TEXT, 0);
-    lv_obj_align(btc_price_label, LV_ALIGN_LEFT_MID, 8, 0);
+    lv_obj_align(btc_price_label, LV_ALIGN_LEFT_MID, 50, 8);
 
-    btc_change_label = lv_label_create(price_panel);
-    lv_label_set_text(btc_change_label, "24h: ---");
-    lv_obj_set_style_text_font(btc_change_label, &font_styrene_20, 0);
+    // 24h change arrow + percentage (right side)
+    btc_arrow_label = lv_label_create(header);
+    lv_label_set_text(btc_arrow_label, "-");
+    lv_obj_set_style_text_font(btc_arrow_label, &font_styrene_24, 0);
+    lv_obj_set_style_text_color(btc_arrow_label, COL_DIM, 0);
+    lv_obj_align(btc_arrow_label, LV_ALIGN_RIGHT_MID, -70, 0);
+
+    btc_change_label = lv_label_create(header);
+    lv_label_set_text(btc_change_label, "24h ---%");
+    lv_obj_set_style_text_font(btc_change_label, &font_styrene_16, 0);
     lv_obj_set_style_text_color(btc_change_label, COL_DIM, 0);
-    lv_obj_align(btc_change_label, LV_ALIGN_RIGHT_MID, -8, 0);
+    lv_obj_align(btc_change_label, LV_ALIGN_RIGHT_MID, -4, 0);
 
-    // Chart: 30 downsampled points covering 6 months
+    // ====== Chart: 6-month history, neon orange line ======
     btc_chart = lv_chart_create(page_bitcoin);
-    lv_obj_set_pos(btc_chart, MARGIN, 62);
-    lv_obj_set_size(btc_chart, CONTENT_W, 140);
+    lv_obj_set_pos(btc_chart, MARGIN, 64);
+    lv_obj_set_size(btc_chart, CONTENT_W, 130);
     lv_chart_set_type(btc_chart, LV_CHART_TYPE_LINE);
     lv_chart_set_point_count(btc_chart, 20);
     lv_chart_set_update_mode(btc_chart, LV_CHART_UPDATE_MODE_SHIFT);
-    lv_obj_set_style_bg_color(btc_chart, COL_PANEL, 0);
-    lv_obj_set_style_bg_opa(btc_chart, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(btc_chart, 0, 0);
-    lv_obj_set_style_pad_all(btc_chart, 8, 0);
-    lv_obj_set_style_text_font(btc_chart, &font_styrene_12, LV_PART_MAIN);
-    lv_obj_set_style_text_color(btc_chart, COL_DIM, 0);
-    lv_obj_set_style_line_width(btc_chart, 3, LV_PART_ITEMS);  // Increased line width for visibility
+    lv_chart_set_div_line_count(btc_chart, 4, 6);
 
-    btc_series = lv_chart_add_series(btc_chart, COL_ACCENT, LV_CHART_AXIS_PRIMARY_Y);
+    lv_obj_set_style_bg_color(btc_chart, BTC_DEEP, 0);
+    lv_obj_set_style_bg_opa(btc_chart, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(btc_chart, 4, 0);
+    lv_obj_set_style_border_color(btc_chart, BTC_BORDER, 0);
+    lv_obj_set_style_border_width(btc_chart, 1, 0);
+    lv_obj_set_style_pad_all(btc_chart, 6, 0);
+
+    // Grid lines: subtle cyan-tinted dark
+    lv_obj_set_style_line_color(btc_chart, BTC_GRID, LV_PART_MAIN);
+    lv_obj_set_style_line_width(btc_chart, 1, LV_PART_MAIN);
+    lv_obj_set_style_line_opa(btc_chart, LV_OPA_60, LV_PART_MAIN);
+
+    // Chart line: bright orange, thick for visibility on AMOLED
+    lv_obj_set_style_line_width(btc_chart, 3, LV_PART_ITEMS);
+    lv_obj_set_style_line_color(btc_chart, BTC_ORANGE, LV_PART_ITEMS);
+    // Hide point markers (we want a clean line look)
+    lv_obj_set_style_size(btc_chart, 0, 0, LV_PART_INDICATOR);
+
+    btc_series = lv_chart_add_series(btc_chart, BTC_ORANGE, LV_CHART_AXIS_PRIMARY_Y);
+
+    // ====== Footer: 3 stat cards (HIGH / LOW / RANGE) ======
+    int card_gap = 6;
+    int card_w = (CONTENT_W - 2 * card_gap) / 3;
+    int card_y = 198;
+
+    make_btc_stat_card(page_bitcoin, MARGIN, card_y, card_w,
+                       "6M HIGH", &btc_high_value, BTC_CYAN);
+    make_btc_stat_card(page_bitcoin, MARGIN + card_w + card_gap, card_y, card_w,
+                       "6M LOW", &btc_low_value, BTC_CYAN);
+    make_btc_stat_card(page_bitcoin, MARGIN + 2 * (card_w + card_gap), card_y, card_w,
+                       "POSITION", &btc_range_value, BTC_ORANGE);
 }
 
 // Shared placeholder helper for the still-unbuilt pages (actions).
@@ -527,29 +638,53 @@ void ui_update_system_stats(const SystemStats* s) {
     set_cell(&sc_net, buf, net_pct, COL_ACCENT);
 }
 
+// Format a price with thousand separators: 76560 -> "76,560"
+static void format_price_with_commas(int price, char* buf, size_t buflen) {
+    char raw[16];
+    snprintf(raw, sizeof(raw), "%d", price);
+    int len = strlen(raw);
+    int out = 0;
+    for (int i = 0; i < len && out < (int)buflen - 2; i++) {
+        if (i > 0 && (len - i) % 3 == 0) {
+            buf[out++] = ',';
+        }
+        buf[out++] = raw[i];
+    }
+    buf[out] = '\0';
+}
+
 void ui_update_bitcoin_data(const BitcoinData* data) {
     if (!data || !data->valid) return;
 
     char buf[48];
-    snprintf(buf, sizeof(buf), "$%d", data->price);
+    char num_buf[24];
+
+    // ----- Price with thousand separators -----
+    format_price_with_commas(data->price, num_buf, sizeof(num_buf));
+    snprintf(buf, sizeof(buf), "$%s", num_buf);
     lv_label_set_text(btc_price_label, buf);
 
+    // ----- 24h change with arrow indicator -----
     lv_color_t change_color = COL_DIM;
+    const char* arrow = "-";
     int change_bps = data->price_24h_change_bps;
     if (change_bps > 0) {
         change_color = COL_GREEN;
-        snprintf(buf, sizeof(buf), "24h: +%d.%02d%%", change_bps / 100, change_bps % 100);
+        arrow = LV_SYMBOL_UP;
+        snprintf(buf, sizeof(buf), "+%d.%02d%%", change_bps / 100, change_bps % 100);
     } else if (change_bps < 0) {
         change_color = COL_RED;
-        snprintf(buf, sizeof(buf), "24h: %d.%02d%%", change_bps / 100, (-change_bps) % 100);
+        arrow = LV_SYMBOL_DOWN;
+        snprintf(buf, sizeof(buf), "%d.%02d%%", change_bps / 100, (-change_bps) % 100);
     } else {
-        snprintf(buf, sizeof(buf), "24h: 0.00%%");
+        snprintf(buf, sizeof(buf), "0.00%%");
     }
     lv_label_set_text(btc_change_label, buf);
     lv_obj_set_style_text_color(btc_change_label, change_color, 0);
+    lv_label_set_text(btc_arrow_label, arrow);
+    lv_obj_set_style_text_color(btc_arrow_label, change_color, 0);
 
-    // Update chart: find min/max to scale the Y axis.
-    // Initialize with current price if no history.
+    // ----- Compute 6-month min/max from history -----
     int min_price = data->price;
     int max_price = data->price;
     for (int i = 0; i < data->history_count; i++) {
@@ -558,32 +693,51 @@ void ui_update_bitcoin_data(const BitcoinData* data) {
             if (data->price_history[i] > max_price) max_price = data->price_history[i];
         }
     }
-
-    // Use 24h min/max if available (likely covers a wider range than recent samples).
+    // Pull in 24h range if it extends beyond what we have
     if (data->price_24h_min > 0 && data->price_24h_min < min_price) min_price = data->price_24h_min;
     if (data->price_24h_max > max_price) max_price = data->price_24h_max;
 
-    // Add 5% padding to the range for visual breathing room.
+    // ----- Update stat cards (HIGH / LOW / POSITION) -----
+    format_price_with_commas(max_price, num_buf, sizeof(num_buf));
+    snprintf(buf, sizeof(buf), "$%s", num_buf);
+    lv_label_set_text(btc_high_value, buf);
+
+    format_price_with_commas(min_price, num_buf, sizeof(num_buf));
+    snprintf(buf, sizeof(buf), "$%s", num_buf);
+    lv_label_set_text(btc_low_value, buf);
+
+    // POSITION: where in the 6M range is the current price (0% = at low, 100% = at high)
+    int range_full = max_price - min_price;
+    int position_pct = 50;
+    if (range_full > 0) {
+        position_pct = ((data->price - min_price) * 100) / range_full;
+        if (position_pct < 0) position_pct = 0;
+        if (position_pct > 100) position_pct = 100;
+    }
+    snprintf(buf, sizeof(buf), "%d%%", position_pct);
+    lv_label_set_text(btc_range_value, buf);
+    // Color the position by where it is in the range (high = orange/red, low = cyan)
+    lv_color_t pos_color = BTC_ORANGE;
+    if (position_pct < 33) pos_color = BTC_CYAN;
+    else if (position_pct < 66) pos_color = COL_AMBER;
+    lv_obj_set_style_text_color(btc_range_value, pos_color, 0);
+
+    // ----- Set chart Y range with 5% padding -----
     int range = max_price - min_price;
-    if (range == 0) range = 1;  // Avoid divide-by-zero if all prices are identical.
+    if (range == 0) range = 1;
     int padding = range / 20;
-    min_price -= padding;
-    max_price += padding;
+    lv_chart_set_range(btc_chart, LV_CHART_AXIS_PRIMARY_Y,
+                       min_price - padding, max_price + padding);
 
-    lv_chart_set_range(btc_chart, LV_CHART_AXIS_PRIMARY_Y, min_price, max_price);
-
-    // Populate the chart with history data.
-    // Clear old data by re-allocating the series points.
+    // ----- Populate chart -----
     lv_chart_remove_series(btc_chart, btc_series);
-    btc_series = lv_chart_add_series(btc_chart, COL_ACCENT, LV_CHART_AXIS_PRIMARY_Y);
+    btc_series = lv_chart_add_series(btc_chart, BTC_ORANGE, LV_CHART_AXIS_PRIMARY_Y);
 
     for (int i = 0; i < data->history_count; i++) {
         if (data->price_history[i] > 0) {
             lv_chart_set_next_value(btc_chart, btc_series, data->price_history[i]);
         }
     }
-
-    // Append current price at the end if there's room.
     if (data->history_count < 20) {
         lv_chart_set_next_value(btc_chart, btc_series, data->price);
     }
