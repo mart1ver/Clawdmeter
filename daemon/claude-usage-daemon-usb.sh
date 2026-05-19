@@ -49,9 +49,13 @@ LAST_BTC_POLL=0
 LAST_BTC_DAY=0
 BTC_CACHE_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/claude-btc-history.json"
 
+CPU_PCT=0
+# Delta-based — sets global CPU_PCT (NOT echoed) so PREV_CPU_* persist
+# across calls. Calling via cpu=$(read_cpu_pct) would run in a subshell
+# where PREV updates are lost, making every call return the since-boot
+# average instead of the real-time %.
 read_cpu_pct() {
-    # /proc/stat first line: cpu user nice system idle iowait irq softirq steal ...
-    local f1 f2 f3 f4 f5 f6 f7 f8 total idle d_total d_idle pct
+    local f1 f2 f3 f4 f5 f6 f7 f8 total idle d_total d_idle
     read -r _ f1 f2 f3 f4 f5 f6 f7 f8 _ < /proc/stat
     idle=$(( f4 + f5 ))               # idle + iowait
     total=$(( f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 ))
@@ -59,11 +63,10 @@ read_cpu_pct() {
     d_idle=$(( idle  - PREV_CPU_IDLE  ))
     PREV_CPU_TOTAL=$total
     PREV_CPU_IDLE=$idle
-    if (( d_total <= 0 )); then echo 0; return; fi
-    pct=$(( ( (d_total - d_idle) * 100 ) / d_total ))
-    (( pct < 0 )) && pct=0
-    (( pct > 100 )) && pct=100
-    echo "$pct"
+    if (( d_total <= 0 )); then CPU_PCT=0; return; fi
+    CPU_PCT=$(( ( (d_total - d_idle) * 100 ) / d_total ))
+    (( CPU_PCT < 0 )) && CPU_PCT=0
+    (( CPU_PCT > 100 )) && CPU_PCT=100
 }
 
 read_ram_pct() {
@@ -110,8 +113,11 @@ read_gpu_pct() {
     echo -1
 }
 
+NET_KBPS=0
+# Delta-based — sets global NET_KBPS (NOT echoed) for the same subshell
+# reason as read_cpu_pct above. Calling via net=$(read_net_kbps) would
+# wipe PREV_NET_* each call and the function would always return 0.
 read_net_kbps() {
-    # Sum bytes RX (col 2) + TX (col 10) across every iface except lo.
     local rx tx now_ms d_t d_rx d_tx
     read -r rx tx < <(awk -F'[: ]+' '
         /^[[:space:]]*lo:/ { next }
@@ -121,15 +127,15 @@ read_net_kbps() {
     now_ms=$(date +%s%3N)
     if (( PREV_NET_TIME_MS == 0 )); then
         PREV_NET_RX=$rx; PREV_NET_TX=$tx; PREV_NET_TIME_MS=$now_ms
-        echo 0; return
+        NET_KBPS=0; return
     fi
     d_t=$(( now_ms - PREV_NET_TIME_MS ))
-    (( d_t <= 0 )) && { echo 0; return; }
+    (( d_t <= 0 )) && { NET_KBPS=0; return; }
     d_rx=$(( rx - PREV_NET_RX ))
     d_tx=$(( tx - PREV_NET_TX ))
     PREV_NET_RX=$rx; PREV_NET_TX=$tx; PREV_NET_TIME_MS=$now_ms
     # KB/s = (bytes / 1024) * (1000 / ms)
-    echo $(( ( (d_rx + d_tx) * 1000 ) / (1024 * d_t) ))
+    NET_KBPS=$(( ( (d_rx + d_tx) * 1000 ) / (1024 * d_t) ))
 }
 
 read_bitcoin_price() {
@@ -315,15 +321,17 @@ push_system_stats_if_due() {
     (( now - LAST_SYS_PUSH < SYS_PUSH_INTERVAL )) && return 0
     LAST_SYS_PUSH=$now
 
-    local cpu ram disk temp gpu net
-    cpu=$(read_cpu_pct)
+    local ram disk temp gpu
+    # CPU + NET use globals (CPU_PCT, NET_KBPS) to keep PREV_* alive
+    # across calls — see read_cpu_pct / read_net_kbps for why.
+    read_cpu_pct
+    read_net_kbps
     ram=$(read_ram_pct)
     disk=$(read_disk_pct)
     temp=$(read_temp_c)
     gpu=$(read_gpu_pct)
-    net=$(read_net_kbps)
 
-    send_line "{\"sys\":{\"cpu\":$cpu,\"ram\":$ram,\"disk\":$disk,\"temp\":$temp,\"gpu\":$gpu,\"net\":$net}}" || return 1
+    send_line "{\"sys\":{\"cpu\":$CPU_PCT,\"ram\":$ram,\"disk\":$disk,\"temp\":$temp,\"gpu\":$gpu,\"net\":$NET_KBPS}}" || return 1
 }
 
 # Pull the active model alias out of Claude Code's settings.json and normalize
