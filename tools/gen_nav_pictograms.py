@@ -88,63 +88,108 @@ def gen_system_eq():
 def gen_bitcoin_coin():
     palette = [
         (0, 0, 0),          # 0 bg
-        (0xf7, 0x93, 0x1a), # 1 bright BTC orange
-        (0xa0, 0x5b, 0x10), # 2 dim orange (shadow)
-        (0xff, 0xc8, 0x70), # 3 light orange (highlight)
-        (0xff, 0xff, 0xff), # 4 white
+        (0xf7, 0x93, 0x1a), # 1 bright BTC orange (coin face)
+        (0xa0, 0x5b, 0x10), # 2 dim orange (coin edge / shadow)
+        (0xff, 0xc8, 0x70), # 3 light orange (highlight on pulse)
+        (0xff, 0xff, 0xff), # 4 white (B character carved out)
     ]
 
-    # Bigger, bolder Bitcoin "B" with two short stems above + below.
-    # Layout:
-    #   B body at x=2..17 (16 wide), y=3..14 (12 tall)
-    #     - left vertical  x=2..5
-    #     - gap            x=6..13
-    #     - right vertical x=14..17
-    #     - bars at y=3-4 (top), y=8-9 (middle), y=13-14 (bottom)
-    #   Stems centered on the left+right verticals at x=3-4 and x=15-16
-    #     - top stems    y=1..2
-    #     - bottom stems y=15..16
-    # Stems align with B verticals so the eye reads continuous strokes.
-    GLYPH = [
-        "....................",  # y=0
-        "...##..........##...",  # y=1  top stems (aligned to verticals)
-        "...##..........##...",  # y=2
-        "..################..",  # y=3  top bar (full B width)
-        "..################..",  # y=4
-        "..####........####..",  # y=5  left + gap + right
-        "..####........####..",  # y=6
-        "..####........####..",  # y=7
-        "..################..",  # y=8  middle bar
-        "..################..",  # y=9
-        "..####........####..",  # y=10
-        "..####........####..",  # y=11
-        "..####........####..",  # y=12
-        "..################..",  # y=13 bottom bar
-        "..################..",  # y=14
-        "...##..........##...",  # y=15 bottom stems
-        "...##..........##...",  # y=16
-        "....................",  # y=17
-        "....................",  # y=18
-        "....................",  # y=19
-    ]
+    cx, cy = 9.5, 9.5  # canvas center
+    R_OUTER = 9.0      # outer coin radius (in cells)
+    R_INNER = 8.0      # inner radius (everything beyond becomes the edge ring)
 
-    def render(lines, color):
+    def make_coin_base(fill, ring):
+        """Filled orange disc with a 1-cell darker ring at the edge."""
         g = [[0] * GRID for _ in range(GRID)]
-        for y, line in enumerate(lines):
-            for x, ch in enumerate(line):
-                if ch == '#':
-                    g[y][x] = color
+        for y in range(GRID):
+            for x in range(GRID):
+                dx = x - cx
+                dy = y - cy
+                d2 = dx * dx + dy * dy
+                if d2 <= R_INNER * R_INNER:
+                    g[y][x] = fill  # main face
+                elif d2 <= R_OUTER * R_OUTER:
+                    g[y][x] = ring  # darker edge ring (depth)
         return g
 
-    # 6 frames: pulse cycle (bright -> highlight -> bright -> dim -> bright -> highlight)
-    frames = [
-        render(GLYPH, 1),  # bright
-        render(GLYPH, 3),  # light highlight
-        render(GLYPH, 1),  # bright
-        render(GLYPH, 2),  # dim shadow
-        render(GLYPH, 1),  # bright
-        render(GLYPH, 3),  # highlight
+    # White ₿ glyph drawn ON TOP of the coin face.
+    # 6 wide x 11 tall, centered horizontally.
+    #   y=4-5   : top stems (2x2 each, on the bumps' verticals)
+    #   y=6-7   : top horizontal bar of B
+    #   y=8     : cut (left stem + space + right bump verticals)
+    #   y=9-10  : middle horizontal bar
+    #   y=11    : cut
+    #   y=12-13 : bottom horizontal bar
+    #   y=14-15 : bottom stems
+    # B is 6 wide so it leaves margin inside the circle.
+    B_LINES = [
+        # x:           0..19 — full grid for clarity
+        # The actual B is at x=7..12 (6 wide)
+        ("....", "..##.....##....", "...."),  # y=4 (placeholder, replaced below)
     ]
+
+    # Easier: hand-place each white cell explicitly.
+    # ₿ design (6w x 12h) at x=7..12, y=4..15:
+    WHITE_GLYPH = [
+        # (y, x) cells to set white
+        # ---- top stems (y=4, y=5) ----
+        # The two short verticals above the B: at x=8 and x=11
+        (4, 8), (4, 11),
+        (5, 8), (5, 11),
+        # ---- top bar of B (y=6, y=7) ----
+        # Full width x=7..12
+        (6, 7), (6, 8), (6, 9), (6, 10), (6, 11), (6, 12),
+        (7, 7), (7, 8), (7, 9), (7, 10), (7, 11), (7, 12),
+        # ---- middle cut (y=8) ----
+        # Left stem at x=7-8, right bump at x=11-12
+        (8, 7), (8, 8),                (8, 11), (8, 12),
+        # ---- middle bar (y=9, y=10) ----
+        (9, 7), (9, 8), (9, 9), (9, 10), (9, 11), (9, 12),
+        (10, 7), (10, 8), (10, 9), (10, 10), (10, 11), (10, 12),
+        # ---- bottom cut (y=11) ----
+        (11, 7), (11, 8),               (11, 11), (11, 12),
+        # ---- bottom bar (y=12, y=13) ----
+        (12, 7), (12, 8), (12, 9), (12, 10), (12, 11), (12, 12),
+        (13, 7), (13, 8), (13, 9), (13, 10), (13, 11), (13, 12),
+        # ---- bottom stems (y=14, y=15) ----
+        (14, 8), (14, 11),
+        (15, 8), (15, 11),
+    ]
+
+    def overlay_white(g):
+        for y, x in WHITE_GLYPH:
+            if 0 <= y < GRID and 0 <= x < GRID:
+                g[y][x] = 4  # white
+        return g
+
+    # 6-frame pulse: vary the coin face brightness so the white B always
+    # stays crisp on top.
+    frames = []
+    # Frame 0: bright coin, dark ring
+    g = make_coin_base(fill=1, ring=2)
+    overlay_white(g)
+    frames.append(g)
+    # Frame 1: bright coin, BRIGHT ring (peak highlight)
+    g = make_coin_base(fill=1, ring=3)
+    overlay_white(g)
+    frames.append(g)
+    # Frame 2: bright coin, dark ring
+    g = make_coin_base(fill=1, ring=2)
+    overlay_white(g)
+    frames.append(g)
+    # Frame 3: face dims slightly
+    g = make_coin_base(fill=2, ring=2)
+    overlay_white(g)
+    frames.append(g)
+    # Frame 4: back to bright
+    g = make_coin_base(fill=1, ring=2)
+    overlay_white(g)
+    frames.append(g)
+    # Frame 5: very bright (light orange face)
+    g = make_coin_base(fill=3, ring=1)
+    overlay_white(g)
+    frames.append(g)
+
     holds = [260, 120, 260, 200, 260, 120]
     return palette, frames, holds
 
