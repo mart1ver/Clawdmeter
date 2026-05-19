@@ -174,80 +174,88 @@ read_bitcoin_history() {
     sed 's/\[[0-9]*,\([0-9]*\)\.[0-9]*\]/\1/'
 }
 
-init_bitcoin_history() {
-    # One-time initialization: load 180 days of history from cache or API.
-
-    # Try loading from cache first
-    if [ -f "$BTC_CACHE_FILE" ]; then
-        log "Bitcoin: loading history from cache..."
-        local count=0
-        while IFS= read -r price; do
-            if [ -z "$price" ] || [ "$price" -eq 0 ]; then
-                continue
-            fi
-            BTC_HISTORY[$count]=$price
-
-            # Track min/max.
-            if [ $BTC_24H_MIN -eq 0 ] || [ $price -lt $BTC_24H_MIN ]; then
-                BTC_24H_MIN=$price
-            fi
-            if [ $price -gt $BTC_24H_MAX ]; then
-                BTC_24H_MAX=$price
-            fi
-
-            (( count++ ))
-            if [ $count -ge 180 ]; then
-                break
-            fi
-        done < "$BTC_CACHE_FILE"
-
-        BTC_HISTORY_IDX=$count
-        if [ $count -gt 0 ]; then
-            # Set current price as the last (most recent) price in the history
-            if [ -n "${BTC_HISTORY[$((count-1))]}" ]; then
-                BTC_CURRENT_PRICE=${BTC_HISTORY[$((count-1))]}
-            fi
-            log "Bitcoin: loaded $count days from cache (min: \$$BTC_24H_MIN, max: \$$BTC_24H_MAX, current: \$$BTC_CURRENT_PRICE)"
-            return 0
-        fi
-    fi
-
-    # Cache miss or empty: fetch from API
-    log "Bitcoin: fetching 180 days of history from API..."
+# Try fetching fresh 180-day history from CoinGecko API. Populates the ring
+# buffer + writes a fresh cache file. Returns 0 on success, 1 on API failure.
+btc_fetch_from_api() {
+    log "Bitcoin: fetching 180 days of history from CoinGecko API..."
     local prices
-    prices=$(read_bitcoin_history) || { log "Bitcoin history fetch failed"; return 1; }
+    prices=$(read_bitcoin_history) || { log "Bitcoin history fetch failed (rate limit?)"; return 1; }
 
+    # Atomically replace the cache file
+    local tmp="$BTC_CACHE_FILE.tmp"
+    : > "$tmp"
     local count=0
-    {
-        while IFS= read -r price; do
-            if [ -z "$price" ] || [ "$price" -eq 0 ]; then
-                continue
-            fi
-            BTC_HISTORY[$count]=$price
-            echo "$price" >> "$BTC_CACHE_FILE"
+    BTC_24H_MIN=0
+    BTC_24H_MAX=0
+    while IFS= read -r price; do
+        [ -z "$price" ] || [ "$price" -eq 0 ] && continue
+        BTC_HISTORY[$count]=$price
+        echo "$price" >> "$tmp"
+        if [ $BTC_24H_MIN -eq 0 ] || [ $price -lt $BTC_24H_MIN ]; then BTC_24H_MIN=$price; fi
+        if [ $price -gt $BTC_24H_MAX ]; then BTC_24H_MAX=$price; fi
+        (( count++ ))
+        [ $count -ge 180 ] && break
+    done <<< "$prices"
 
-            # Track min/max.
-            if [ $BTC_24H_MIN -eq 0 ] || [ $price -lt $BTC_24H_MIN ]; then
-                BTC_24H_MIN=$price
-            fi
-            if [ $price -gt $BTC_24H_MAX ]; then
-                BTC_24H_MAX=$price
-            fi
-
-            (( count++ ))
-            if [ $count -ge 180 ]; then
-                break
-            fi
-        done <<< "$prices"
-    }
-
-    BTC_HISTORY_IDX=$count
-    # Set current price as the last (most recent) price
-    if [ $count -gt 0 ] && [ -n "${BTC_HISTORY[$((count-1))]}" ]; then
-        BTC_CURRENT_PRICE=${BTC_HISTORY[$((count-1))]}
+    if [ $count -lt 30 ]; then
+        log "Bitcoin: API returned too few prices ($count) — keeping old cache"
+        rm -f "$tmp"
+        return 1
     fi
+
+    mv "$tmp" "$BTC_CACHE_FILE"
+    BTC_HISTORY_IDX=$count
+    [ -n "${BTC_HISTORY[$((count-1))]}" ] && BTC_CURRENT_PRICE=${BTC_HISTORY[$((count-1))]}
     log "Bitcoin: loaded $count days from API (min: \$$BTC_24H_MIN, max: \$$BTC_24H_MAX, current: \$$BTC_CURRENT_PRICE)"
     return 0
+}
+
+btc_load_from_cache() {
+    [ -f "$BTC_CACHE_FILE" ] || return 1
+    log "Bitcoin: loading history from cache..."
+    local count=0
+    BTC_24H_MIN=0
+    BTC_24H_MAX=0
+    while IFS= read -r price; do
+        [ -z "$price" ] || [ "$price" -eq 0 ] && continue
+        BTC_HISTORY[$count]=$price
+        if [ $BTC_24H_MIN -eq 0 ] || [ $price -lt $BTC_24H_MIN ]; then BTC_24H_MIN=$price; fi
+        if [ $price -gt $BTC_24H_MAX ]; then BTC_24H_MAX=$price; fi
+        (( count++ ))
+        [ $count -ge 180 ] && break
+    done < "$BTC_CACHE_FILE"
+
+    [ $count -eq 0 ] && return 1
+    BTC_HISTORY_IDX=$count
+    [ -n "${BTC_HISTORY[$((count-1))]}" ] && BTC_CURRENT_PRICE=${BTC_HISTORY[$((count-1))]}
+    log "Bitcoin: loaded $count days from cache (min: \$$BTC_24H_MIN, max: \$$BTC_24H_MAX, current: \$$BTC_CURRENT_PRICE)"
+    return 0
+}
+
+# One-time initialization: prefer fresh API data; fall back to cache if API
+# fails or cache is still fresh (< 24h old). Avoids hammering CoinGecko on
+# every daemon restart while keeping data current.
+BTC_CACHE_TTL=86400   # seconds — re-fetch when cache is older than this
+init_bitcoin_history() {
+    local now=$(date +%s)
+    local cache_age=$BTC_CACHE_TTL
+    if [ -f "$BTC_CACHE_FILE" ]; then
+        local cache_mtime
+        cache_mtime=$(stat -c %Y "$BTC_CACHE_FILE" 2>/dev/null) || cache_mtime=0
+        cache_age=$(( now - cache_mtime ))
+    fi
+
+    if (( cache_age < BTC_CACHE_TTL )); then
+        log "Bitcoin: cache is $((cache_age/3600))h old, using it (< 24h TTL)"
+        btc_load_from_cache && return 0
+    fi
+
+    # Cache is stale OR missing OR couldn't be loaded → try API
+    btc_fetch_from_api && return 0
+
+    # API failed → fall back to whatever cache we have, even if stale
+    log "Bitcoin: API unreachable, falling back to cache"
+    btc_load_from_cache
 }
 
 push_bitcoin_if_due() {
@@ -293,13 +301,17 @@ push_bitcoin_if_due() {
         fi
     fi
 
-    # Build the history array as JSON: downsample 180 → 20 points (1 every 9 days)
-    # to keep payload well under ESP32 UART buffer limit (256 bytes default).
+    # Build downsampled history: 180 → 20 points, evenly spaced from oldest
+    # to NEWEST. The previous version used stride=9 which capped at index
+    # 171 and never included the current price → chart looked frozen and
+    # didn't match the displayed "$X" headline.
+    # Formula: i * 179 / 19 (integer math) gives 0, 9, 18, ..., 169, 179
+    # — last sample is index 179 = newest = today's price.
     local hist_json="["
     local count=0
     for i in {0..19}; do
-        local src_idx=$(( i * 9 ))
-        local idx=$(( (BTC_HISTORY_IDX + src_idx) % 180 ))
+        local src_offset=$(( i * 179 / 19 ))
+        local idx=$(( (BTC_HISTORY_IDX + src_offset) % 180 ))
         if [ -n "${BTC_HISTORY[$idx]}" ] && [ "${BTC_HISTORY[$idx]}" -gt 0 ]; then
             [ $count -gt 0 ] && hist_json="$hist_json,"
             hist_json="$hist_json${BTC_HISTORY[$idx]}"
