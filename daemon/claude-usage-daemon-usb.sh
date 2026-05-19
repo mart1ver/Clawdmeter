@@ -342,11 +342,34 @@ read_model() {
     esac
 }
 
-# Pull the effort level out of Claude Code's settings.json. Mirrors read_model
-# but for the "effortLevel" key. Returns low/medium/high/max — or "default" if
-# unset. NOTE: /effort "this session only" doesn't update settings.json, so the
-# pill reflects the persistent baseline, not transient session overrides.
+# Find the most recently active Claude Code session log (one jsonl per
+# session under ~/.claude/projects/). Echos the path, or empty if none.
+active_session_jsonl() {
+    find "$HOME/.claude/projects" -maxdepth 2 -name "*.jsonl" -printf "%T@ %p\n" 2>/dev/null \
+        | sort -n | tail -1 | awk '{print $2}'
+}
+
+# Read the current effort level. Strategy:
+#   1. Tail the active session jsonl for the LAST "Set effort level to X"
+#      local-command-stdout marker. Catches every /effort change including
+#      "this session only" levels (max) that don't touch settings.json.
+#   2. If no session log found, fall back to settings.json:effortLevel
+#      (the persistent baseline).
 read_effort() {
+    local jsonl from_session
+    jsonl=$(active_session_jsonl)
+    if [ -n "$jsonl" ] && [ -r "$jsonl" ]; then
+        # Scan last ~500KB of the log only (the file can be many MB)
+        from_session=$(tail -c 500000 "$jsonl" 2>/dev/null \
+            | grep -oE "Set effort level to [a-z]+" \
+            | tail -1 | awk '{print $5}')
+        if [ -n "$from_session" ]; then
+            echo "$from_session"
+            return
+        fi
+    fi
+
+    # Fallback: persistent baseline from settings.json
     local raw
     raw=$(grep -oE '"effortLevel"[[:space:]]*:[[:space:]]*"[^"]*"' "$HOME/.claude/settings.json" 2>/dev/null \
           | head -1 | sed -E 's/.*"([^"]*)"[^"]*$/\1/')
@@ -517,25 +540,33 @@ LAST_MODEL=""
 LAST_EFFORT=""
 BTC_HISTORY_INIT=0      # Flag: have we fetched 180 days of Bitcoin history?
 
-# Push partial JSON whenever the settings.json file changes — covers both
-# /model and /effort. The firmware treats missing fields as "keep previous
-# value" so this leaves the gauges untouched.
+# Push partial JSON when model or effort changes. Two different cadences:
+#   • Model lives in settings.json → watched via mtime (cheap, instant)
+#   • Effort can come from session jsonl (for "this session only" /effort
+#     levels like max) → re-checked every TICK regardless of file changes,
+#     since the session log can update without modifying settings.json
+# Firmware treats missing JSON fields as "keep previous value" so this
+# leaves the gauges untouched.
 push_settings_if_changed() {
     [ -f "$SETTINGS_FILE" ] || return 0
-    local mtime
-    mtime=$(stat -c %Y "$SETTINGS_FILE" 2>/dev/null) || return 0
-    [ "$mtime" = "$LAST_SETTINGS_MTIME" ] && return 0
-    LAST_SETTINGS_MTIME="$mtime"
 
-    local m e
-    m=$(read_model)
-    e=$(read_effort)
-
-    if [ "$m" != "$LAST_MODEL" ]; then
-        log "Model changed: ${LAST_MODEL:-?} → $m"
-        LAST_MODEL="$m"
-        send_line "{\"m\":\"$m\"}" || return 1
+    # Model: only re-read when settings.json mtime changes
+    local mtime m
+    mtime=$(stat -c %Y "$SETTINGS_FILE" 2>/dev/null) || mtime=0
+    if [ "$mtime" != "$LAST_SETTINGS_MTIME" ]; then
+        LAST_SETTINGS_MTIME="$mtime"
+        m=$(read_model)
+        if [ "$m" != "$LAST_MODEL" ]; then
+            log "Model changed: ${LAST_MODEL:-?} → $m"
+            LAST_MODEL="$m"
+            send_line "{\"m\":\"$m\"}" || return 1
+        fi
     fi
+
+    # Effort: re-read every tick (the session jsonl updates without
+    # touching settings.json when /effort is session-only)
+    local e
+    e=$(read_effort)
     if [ "$e" != "$LAST_EFFORT" ]; then
         log "Effort changed: ${LAST_EFFORT:-?} → $e"
         LAST_EFFORT="$e"
