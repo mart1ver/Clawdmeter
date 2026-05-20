@@ -69,6 +69,37 @@ read_cpu_pct() {
     (( CPU_PCT > 100 )) && CPU_PCT=100
 }
 
+# Per-core CPU percentages. Reads cpu0..cpuN lines from /proc/stat and
+# computes per-core deltas. Populates global arrays CPU_CORE_PCT[0..N-1]
+# and CPU_CORE_COUNT. Same subshell-avoidance pattern as read_cpu_pct.
+declare -a PREV_CORE_TOTAL
+declare -a PREV_CORE_IDLE
+declare -a CPU_CORE_PCT
+CPU_CORE_COUNT=0
+read_cpu_per_core() {
+    local cpu_name f1 f2 f3 f4 f5 f6 f7 f8 total idle d_total d_idle pct i=0
+    while read -r cpu_name f1 f2 f3 f4 f5 f6 f7 f8 _; do
+        # Match "cpu0", "cpu1", etc. (skip the aggregate "cpu" line)
+        [[ "$cpu_name" =~ ^cpu[0-9]+$ ]] || continue
+        idle=$(( f4 + f5 ))
+        total=$(( f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 ))
+        d_total=$(( total - ${PREV_CORE_TOTAL[$i]:-0} ))
+        d_idle=$((  idle - ${PREV_CORE_IDLE[$i]:-0}  ))
+        PREV_CORE_TOTAL[$i]=$total
+        PREV_CORE_IDLE[$i]=$idle
+        if (( d_total <= 0 )); then
+            CPU_CORE_PCT[$i]=0
+        else
+            pct=$(( ( (d_total - d_idle) * 100 ) / d_total ))
+            (( pct < 0 )) && pct=0
+            (( pct > 100 )) && pct=100
+            CPU_CORE_PCT[$i]=$pct
+        fi
+        (( i++ ))
+    done < /proc/stat
+    CPU_CORE_COUNT=$i
+}
+
 read_ram_pct() {
     local total avail
     total=$(awk '/^MemTotal:/  {print $2; exit}' /proc/meminfo)
@@ -111,6 +142,38 @@ read_gpu_pct() {
         cat "$c" 2>/dev/null && return
     done
     echo -1
+}
+
+# Per-GPU utilization + VRAM. Populates GPU_UTIL[] and GPU_VRAM[] (% of
+# total VRAM) and GPU_COUNT. nvtop-style snapshot. Uses globals (NOT
+# echoed) so multi-GPU systems get all values populated.
+declare -a GPU_UTIL
+declare -a GPU_VRAM
+GPU_COUNT=0
+read_gpu_info() {
+    GPU_COUNT=0
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        local line util mem_used mem_total vram_pct i=0
+        while IFS=$', \t' read -r util mem_used mem_total; do
+            [ -z "$util" ] && continue
+            vram_pct=0
+            [ -n "$mem_total" ] && [ "$mem_total" -gt 0 ] && \
+                vram_pct=$(( mem_used * 100 / mem_total ))
+            GPU_UTIL[$i]=$util
+            GPU_VRAM[$i]=$vram_pct
+            (( i++ ))
+        done < <(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null)
+        GPU_COUNT=$i
+        return 0
+    fi
+    # Fallback (no VRAM info): scan sysfs
+    local c
+    for c in /sys/class/drm/card*/device/gpu_busy_percent; do
+        [ -r "$c" ] || continue
+        GPU_UTIL[$GPU_COUNT]=$(cat "$c" 2>/dev/null)
+        GPU_VRAM[$GPU_COUNT]=-1
+        (( GPU_COUNT++ ))
+    done
 }
 
 NET_KBPS=0
@@ -333,17 +396,43 @@ push_system_stats_if_due() {
     (( now - LAST_SYS_PUSH < SYS_PUSH_INTERVAL )) && return 0
     LAST_SYS_PUSH=$now
 
-    local ram disk temp gpu
+    local ram disk temp
     # CPU + NET use globals (CPU_PCT, NET_KBPS) to keep PREV_* alive
     # across calls — see read_cpu_pct / read_net_kbps for why.
     read_cpu_pct
+    read_cpu_per_core
     read_net_kbps
+    read_gpu_info
     ram=$(read_ram_pct)
     disk=$(read_disk_pct)
     temp=$(read_temp_c)
-    gpu=$(read_gpu_pct)
 
-    send_line "{\"sys\":{\"cpu\":$CPU_PCT,\"ram\":$ram,\"disk\":$disk,\"temp\":$temp,\"gpu\":$gpu,\"net\":$NET_KBPS}}" || return 1
+    # Build per-core CPU JSON array: [c0,c1,...,cN]
+    local cpus_json="["
+    local i
+    for (( i=0; i<CPU_CORE_COUNT; i++ )); do
+        [ $i -gt 0 ] && cpus_json="$cpus_json,"
+        cpus_json="$cpus_json${CPU_CORE_PCT[$i]:-0}"
+    done
+    cpus_json="$cpus_json]"
+
+    # Aggregate GPU util + VRAM (first GPU; firmware shows per-GPU bars
+    # when an array is sent — see "gpus" array below for that)
+    local gpu_main=-1 vram_main=-1
+    if (( GPU_COUNT > 0 )); then
+        gpu_main=${GPU_UTIL[0]}
+        vram_main=${GPU_VRAM[0]}
+    fi
+
+    # Per-GPU array (util + vram pairs): [[u0,v0],[u1,v1],...]
+    local gpus_json="["
+    for (( i=0; i<GPU_COUNT; i++ )); do
+        [ $i -gt 0 ] && gpus_json="$gpus_json,"
+        gpus_json="$gpus_json[${GPU_UTIL[$i]:-0},${GPU_VRAM[$i]:-0}]"
+    done
+    gpus_json="$gpus_json]"
+
+    send_line "{\"sys\":{\"cpu\":$CPU_PCT,\"cpus\":$cpus_json,\"ram\":$ram,\"disk\":$disk,\"temp\":$temp,\"gpu\":$gpu_main,\"vram\":$vram_main,\"gpus\":$gpus_json,\"net\":$NET_KBPS}}" || return 1
 }
 
 # Pull the active model alias out of Claude Code's settings.json and normalize

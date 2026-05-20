@@ -83,12 +83,19 @@ static lv_obj_t* lbl_weekly_pct;
 static lv_obj_t* lbl_weekly_label;
 static lv_obj_t* lbl_weekly_reset;
 
-// ---- System page widgets (3 cols x 2 rows, sparkline-based) ----
-#define SYS_SPARK_POINTS  24    // history buffer per metric
+// ---- System page widgets (3 cols x 2 rows) ----
+// Two rendering modes per cell:
+//   SPARKLINE: rolling history line chart (RAM/DISK/TEMP/NET)
+//   BARS:     snapshot of N current values as side-by-side bars
+//             (CPU=12 per-core, GPU=2 util+vram)
+#define SYS_SPARK_POINTS  24
+#define SYS_MAX_BARS      16    // enough for 12 CPU cores
 typedef struct {
     lv_obj_t* value;
     lv_obj_t* chart;
-    lv_chart_series_t* series;
+    lv_chart_series_t* series;     // primary series (sparkline / first bar set)
+    lv_chart_series_t* series2;    // secondary series (GPU VRAM bar), nullable
+    int bar_count;                 // 0 = sparkline mode, >0 = bars mode
 } sys_cell_t;
 static sys_cell_t sc_cpu, sc_ram, sc_disk, sc_temp, sc_gpu, sc_net;
 
@@ -400,6 +407,32 @@ static void make_sys_cell(lv_obj_t* parent, int x, int y,
     }
 }
 
+// Switch a cell from sparkline to bar-snapshot mode. Call after make_sys_cell.
+// num_bars: how many bars (12 for per-core CPU). With 2 series (e.g. GPU
+// util+vram), pass num_bars=1 + accent2 → 2 side-by-side bars per "slot".
+static void make_cell_bars(sys_cell_t* c, int num_bars,
+                           lv_color_t accent, lv_color_t accent2,
+                           bool two_series) {
+    c->bar_count = num_bars;
+    lv_chart_set_type(c->chart, LV_CHART_TYPE_BAR);
+    lv_chart_set_update_mode(c->chart, LV_CHART_UPDATE_MODE_CIRCULAR);
+    lv_chart_set_point_count(c->chart, num_bars);
+
+    // Drop the pre-existing sparkline series — it had different colour/data
+    if (c->series) {
+        lv_chart_remove_series(c->chart, c->series);
+        c->series = nullptr;
+    }
+    c->series  = lv_chart_add_series(c->chart, accent,  LV_CHART_AXIS_PRIMARY_Y);
+    c->series2 = two_series
+                 ? lv_chart_add_series(c->chart, accent2, LV_CHART_AXIS_PRIMARY_Y)
+                 : nullptr;
+
+    // Hide grid (looks busy with many bars), shrink padding
+    lv_chart_set_div_line_count(c->chart, 0, 0);
+    lv_obj_set_style_pad_column(c->chart, 1, 0);  // 1px gap between bars
+}
+
 static void init_page_system(lv_obj_t* scr) {
     page_system = make_page(scr);
     int col_w = SYS_CELL_W + SYS_GAP;
@@ -413,6 +446,11 @@ static void init_page_system(lv_obj_t* scr) {
     make_sys_cell(page_system, MARGIN + 0 * col_w, 1 * row_h, "DISK", &sc_disk, NEON_CYAN);
     make_sys_cell(page_system, MARGIN + 1 * col_w, 1 * row_h, "GPU",  &sc_gpu,  NEON_CYAN);
     make_sys_cell(page_system, MARGIN + 2 * col_w, 1 * row_h, "NET",  &sc_net,  COL_ACCENT);
+
+    // Switch CPU (12 per-core bars) and GPU (util + VRAM) into bar mode.
+    // The other 4 stay as sparklines (time-history is more useful there).
+    make_cell_bars(&sc_cpu, 12, NEON_CYAN, NEON_CYAN, /*two_series=*/false);
+    make_cell_bars(&sc_gpu, 1,  NEON_CYAN, COL_ACCENT, /*two_series=*/true);
 }
 
 // ---- Bitcoin page (futuristic neon style) ----
@@ -782,18 +820,55 @@ static void set_cell(sys_cell_t* c, const char* value_str, int bar_pct, lv_color
     lv_label_set_text(c->value, value_str);
     if (bar_pct < 0) bar_pct = 0;
     if (bar_pct > 100) bar_pct = 100;
-    lv_chart_set_next_value(c->chart, c->series, bar_pct);
-    lv_obj_set_style_line_color(c->chart, color, LV_PART_ITEMS);
-    // Also tint the headline value to match the alert level
+    if (c->bar_count == 0) {
+        // Sparkline mode: shift in the new sample, tint the line
+        lv_chart_set_next_value(c->chart, c->series, bar_pct);
+        lv_obj_set_style_line_color(c->chart, color, LV_PART_ITEMS);
+    }
     lv_obj_set_style_text_color(c->value, color, 0);
+}
+
+// Snapshot-bars update: overwrite all N bars with current per-element values.
+static void set_cell_bars(sys_cell_t* c, const char* value_str,
+                          const int* values, int n, lv_color_t color) {
+    lv_label_set_text(c->value, value_str);
+    if (c->bar_count <= 0 || !c->series) return;
+    int limit = (n < c->bar_count) ? n : c->bar_count;
+    for (int i = 0; i < limit; i++) {
+        int v = values[i];
+        if (v < 0) v = 0;
+        if (v > 100) v = 100;
+        lv_chart_set_value_by_id(c->chart, c->series, i, v);
+    }
+    // Tint headline + bar fill to the alert level
+    lv_obj_set_style_text_color(c->value, color, 0);
+}
+
+// 2-bar variant for GPU: util on series, vram on series2 (different colors)
+static void set_cell_two_bars(sys_cell_t* c, const char* value_str,
+                              int v1, int v2, lv_color_t headline_color) {
+    lv_label_set_text(c->value, value_str);
+    if (!c->series || !c->series2) return;
+    if (v1 < 0) v1 = 0; if (v1 > 100) v1 = 100;
+    if (v2 < 0) v2 = 0; if (v2 > 100) v2 = 100;
+    lv_chart_set_value_by_id(c->chart, c->series,  0, v1);
+    lv_chart_set_value_by_id(c->chart, c->series2, 0, v2);
+    lv_obj_set_style_text_color(c->value, headline_color, 0);
 }
 
 void ui_update_system_stats(const SystemStats* s) {
     if (!s || !s->valid) return;
-    char buf[16];
+    char buf[24];
 
+    // ---- CPU: per-core bars (snapshot) + aggregate headline ----
     snprintf(buf, sizeof(buf), "%d%%", s->cpu);
-    set_cell(&sc_cpu, buf, s->cpu, pct_color(s->cpu));
+    if (s->cpu_core_count > 0) {
+        set_cell_bars(&sc_cpu, buf, s->cpu_cores, s->cpu_core_count,
+                      pct_color(s->cpu));
+    } else {
+        // Daemon didn't send per-core data — fall back to sparkline behaviour
+        set_cell(&sc_cpu, buf, s->cpu, pct_color(s->cpu));
+    }
 
     snprintf(buf, sizeof(buf), "%d%%", s->ram);
     set_cell(&sc_ram, buf, s->ram, pct_color(s->ram));
@@ -804,11 +879,17 @@ void ui_update_system_stats(const SystemStats* s) {
     snprintf(buf, sizeof(buf), "%d\xC2\xB0""C", s->temp);   // "<n>°C"
     set_cell(&sc_temp, buf, s->temp, temp_color(s->temp));
 
-    if (s->gpu < 0) {
-        set_cell(&sc_gpu, "N/A", 0, COL_DIM);
+    // ---- GPU: util + VRAM as two bars ----
+    if (s->gpu < 0 && s->gpu_count == 0) {
+        // No GPU detected at all — clear the cell text
+        set_cell_two_bars(&sc_gpu, "N/A", 0, 0, COL_DIM);
     } else {
-        snprintf(buf, sizeof(buf), "%d%%", s->gpu);
-        set_cell(&sc_gpu, buf, s->gpu, pct_color(s->gpu));
+        int util = (s->gpu_count > 0) ? s->gpu_util[0] : s->gpu;
+        int vram = (s->gpu_count > 0) ? s->gpu_vram[0] : s->vram;
+        if (util < 0) util = 0;
+        if (vram < 0) vram = 0;
+        snprintf(buf, sizeof(buf), "%d%% / %d%%", util, vram);
+        set_cell_two_bars(&sc_gpu, buf, util, vram, pct_color(util));
     }
 
     // Net is in KB/s. Show as KB/s under 1 MB/s, else MB/s with one decimal.

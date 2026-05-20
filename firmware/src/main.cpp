@@ -128,7 +128,33 @@ static bool parse_json(const char* json, UsageData* out) {
         if (!s["disk"].isNull()) sys_stats.disk = s["disk"].as<int>();
         if (!s["temp"].isNull()) sys_stats.temp = s["temp"].as<int>();
         if (!s["gpu"].isNull())  sys_stats.gpu  = s["gpu"].as<int>();
+        if (!s["vram"].isNull()) sys_stats.vram = s["vram"].as<int>();
         if (!s["net"].isNull())  sys_stats.net  = s["net"].as<int>();
+
+        // Per-core CPU array
+        if (!s["cpus"].isNull()) {
+            JsonArray cores = s["cpus"].as<JsonArray>();
+            sys_stats.cpu_core_count = 0;
+            for (JsonVariant v : cores) {
+                if (sys_stats.cpu_core_count >= MAX_CPU_CORES) break;
+                sys_stats.cpu_cores[sys_stats.cpu_core_count++] = v.as<int>();
+            }
+        }
+        // Per-GPU array: [[util,vram],[util,vram],...]
+        if (!s["gpus"].isNull()) {
+            JsonArray gpus = s["gpus"].as<JsonArray>();
+            sys_stats.gpu_count = 0;
+            for (JsonVariant g : gpus) {
+                if (sys_stats.gpu_count >= MAX_GPUS) break;
+                JsonArray pair = g.as<JsonArray>();
+                if (pair.size() >= 2) {
+                    sys_stats.gpu_util[sys_stats.gpu_count] = pair[0].as<int>();
+                    sys_stats.gpu_vram[sys_stats.gpu_count] = pair[1].as<int>();
+                    sys_stats.gpu_count++;
+                }
+            }
+        }
+
         sys_stats.valid = true;
         ui_update_system_stats(&sys_stats);
     }

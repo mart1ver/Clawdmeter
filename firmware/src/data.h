@@ -15,14 +15,22 @@ struct UsageData {
 
 // Host system telemetry pushed every ~2s by the daemon over USB.
 // All percentages are 0-100; -1 means "not available".
+#define MAX_CPU_CORES 16
+#define MAX_GPUS      4
 struct SystemStats {
-    int cpu;        // %
-    int ram;        // %
-    int disk;       // % of root filesystem
-    int temp;       // CPU temperature in °C
-    int gpu;        // %, -1 if no GPU driver detected
-    int net;        // combined RX+TX in KB/s
-    bool valid;     // false until first push received
+    int cpu;                       // aggregate %
+    int cpu_cores[MAX_CPU_CORES];  // per-core %, [0..cpu_core_count-1] valid
+    int cpu_core_count;            // number of cores reported (capped at MAX)
+    int ram;                       // %
+    int disk;                      // % of root filesystem
+    int temp;                      // CPU temperature in °C
+    int gpu;                       // %, -1 if no GPU driver detected
+    int vram;                      // %, -1 if no GPU; first GPU only
+    int gpu_util[MAX_GPUS];        // per-GPU utilization %, [0..gpu_count-1]
+    int gpu_vram[MAX_GPUS];        // per-GPU VRAM used %
+    int gpu_count;                 // number of GPUs reported
+    int net;                       // combined RX+TX in KB/s
+    bool valid;                    // false until first push received
 };
 
 // Bitcoin price data pushed by the daemon over USB.
