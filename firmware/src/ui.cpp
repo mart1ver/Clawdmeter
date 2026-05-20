@@ -873,8 +873,17 @@ void ui_update_system_stats(const SystemStats* s) {
     snprintf(buf, sizeof(buf), "%d%%", s->ram);
     set_cell(&sc_ram, buf, s->ram, pct_color(s->ram));
 
-    snprintf(buf, sizeof(buf), "%d%%", s->disk);
-    set_cell(&sc_disk, buf, s->disk, pct_color(s->disk));
+    // Disk I/O in KB/s. Format identically to NET (KB/s under 1 MB/s,
+    // MB/s above). Bar caps at 100 MB/s — NVMe peak is ~3 GB/s but for
+    // a sparkline we want ordinary spikes (compiles, file copies) to be
+    // visible, not flattened by a too-high ceiling.
+    if (s->disk < 1024) {
+        snprintf(buf, sizeof(buf), "%d KB/s", s->disk);
+    } else {
+        snprintf(buf, sizeof(buf), "%d.%d MB/s", s->disk / 1024, (s->disk % 1024) / 102);
+    }
+    int disk_pct = (int)((long)s->disk * 100 / 102400);   // 100 MB/s = 100%
+    set_cell(&sc_disk, buf, disk_pct, NEON_CYAN);
 
     snprintf(buf, sizeof(buf), "%d\xC2\xB0""C", s->temp);   // "<n>°C"
     set_cell(&sc_temp, buf, s->temp, temp_color(s->temp));

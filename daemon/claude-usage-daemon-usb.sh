@@ -112,6 +112,45 @@ read_disk_pct() {
     df --output=pcent / 2>/dev/null | awk 'NR==2 {gsub(/[ %]/,""); print}'
 }
 
+# Disk I/O throughput (read + write) across all whole-disk devices, in KB/s.
+# Reads sectors_read + sectors_written from /sys/block/<dev>/stat (same
+# fields as /proc/diskstats but easier to enumerate). Skips loopback,
+# ramdisks, device-mapper, optical, zram. Uses globals (PREV_DISK_*) so
+# the delta calculation survives the subshell pattern — same as CPU/NET.
+PREV_DISK_SECTORS=0
+PREV_DISK_TIME_MS=0
+DISK_KBPS=0
+read_disk_kbps() {
+    local total=0 sysblk name r w now_ms d_t d_sec
+    for sysblk in /sys/block/*; do
+        name=$(basename "$sysblk")
+        case "$name" in loop*|ram*|dm-*|sr*|zram*) continue ;; esac
+        [ -r "$sysblk/stat" ] || continue
+        # /sys/block/<dev>/stat layout (man iostat):
+        #   field 0 = reads completed       1 = reads merged
+        #   field 2 = sectors read          3 = time reading (ms)
+        #   field 4 = writes completed      5 = writes merged
+        #   field 6 = sectors written       ...
+        read -r _ _ r _ _ _ w _ < "$sysblk/stat"
+        total=$(( total + r + w ))
+    done
+    now_ms=$(date +%s%3N)
+    if (( PREV_DISK_TIME_MS == 0 )); then
+        PREV_DISK_SECTORS=$total
+        PREV_DISK_TIME_MS=$now_ms
+        DISK_KBPS=0
+        return
+    fi
+    d_t=$(( now_ms - PREV_DISK_TIME_MS ))
+    (( d_t <= 0 )) && { DISK_KBPS=0; return; }
+    d_sec=$(( total - PREV_DISK_SECTORS ))
+    PREV_DISK_SECTORS=$total
+    PREV_DISK_TIME_MS=$now_ms
+    # 1 sector = 512 bytes (Linux kernel convention, NOT hw sector size).
+    # KB/s = (sectors * 512 / 1024) * (1000 / d_t_ms) = sectors * 500 / d_t
+    DISK_KBPS=$(( (d_sec * 500) / d_t ))
+}
+
 read_temp_c() {
     # Prefer a thermal zone whose type matches a CPU package sensor;
     # fall back to thermal_zone0 which is typically the ACPI CPU zone.
@@ -396,15 +435,15 @@ push_system_stats_if_due() {
     (( now - LAST_SYS_PUSH < SYS_PUSH_INTERVAL )) && return 0
     LAST_SYS_PUSH=$now
 
-    local ram disk temp
-    # CPU + NET use globals (CPU_PCT, NET_KBPS) to keep PREV_* alive
-    # across calls — see read_cpu_pct / read_net_kbps for why.
+    local ram temp
+    # CPU + NET + DISK use globals (CPU_PCT, NET_KBPS, DISK_KBPS) to keep
+    # PREV_* alive across calls — see read_cpu_pct for why.
     read_cpu_pct
     read_cpu_per_core
     read_net_kbps
+    read_disk_kbps
     read_gpu_info
     ram=$(read_ram_pct)
-    disk=$(read_disk_pct)
     temp=$(read_temp_c)
 
     # Build per-core CPU JSON array: [c0,c1,...,cN]
@@ -432,7 +471,9 @@ push_system_stats_if_due() {
     done
     gpus_json="$gpus_json]"
 
-    send_line "{\"sys\":{\"cpu\":$CPU_PCT,\"cpus\":$cpus_json,\"ram\":$ram,\"disk\":$disk,\"temp\":$temp,\"gpu\":$gpu_main,\"vram\":$vram_main,\"gpus\":$gpus_json,\"net\":$NET_KBPS}}" || return 1
+    # "disk" now means KB/s of disk I/O (read+write), no longer % full.
+    # Firmware formats it like NET (KB/s under 1 MB/s, MB/s above).
+    send_line "{\"sys\":{\"cpu\":$CPU_PCT,\"cpus\":$cpus_json,\"ram\":$ram,\"disk\":$DISK_KBPS,\"temp\":$temp,\"gpu\":$gpu_main,\"vram\":$vram_main,\"gpus\":$gpus_json,\"net\":$NET_KBPS}}" || return 1
 }
 
 # Pull the active model alias out of Claude Code's settings.json and normalize
