@@ -159,13 +159,17 @@ static bool parse_json(const char* json, UsageData* out) {
         ui_update_system_stats(&sys_stats);
     }
 
-    // Bitcoin price data (nested "btc" object). Daemon pushes this every ~60s.
+    // Ticker data (generic price chart) — daemon sends "btc" with optional
+    // name/symbol/scale fields so we can show any forex/crypto/metal pair.
     if (!doc["btc"].isNull()) {
         JsonObject b = doc["btc"].as<JsonObject>();
         if (!b["price"].isNull())   btc_data.price = b["price"].as<int>();
         if (!b["min24"].isNull())   btc_data.price_24h_min = b["min24"].as<int>();
         if (!b["max24"].isNull())   btc_data.price_24h_max = b["max24"].as<int>();
         if (!b["change24"].isNull()) btc_data.price_24h_change_bps = b["change24"].as<int>();
+        if (!b["name"].isNull())    strlcpy(btc_data.name,   b["name"],  sizeof(btc_data.name));
+        if (!b["sym"].isNull())     strlcpy(btc_data.symbol, b["sym"],   sizeof(btc_data.symbol));
+        if (!b["scl"].isNull())     btc_data.scale = b["scl"].as<int>();
 
         if (!b["history"].isNull()) {
             JsonArray hist = b["history"].as<JsonArray>();

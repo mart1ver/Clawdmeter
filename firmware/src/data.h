@@ -33,15 +33,26 @@ struct SystemStats {
     bool valid;                    // false until first push received
 };
 
-// Bitcoin price data pushed by the daemon over USB.
-// price_history is downsampled to 20 points (1 per ~9 days over 6 months)
-// to keep the JSON payload under the ESP32 default UART RX buffer (256 bytes).
+// Generic ticker (financial instrument) data pushed by the daemon.
+// Used by the "Bitcoin" tab — now a generic price chart that can show any
+// of: BTC/USD, BTC/EUR, BTC/RUB, EUR/USD, USD/EUR, EUR/RUB, RUB/EUR,
+// USD/RUB, RUB/USD, XAU/EUR, XAG/EUR.
+//
+// All prices are sent as INTEGERS multiplied by 10^scale. The firmware
+// divides by 10^scale at display time. This avoids float juggling in
+// bash JSON construction and keeps the wire format compact.
+//   scale=0: integer prices (BTC, gold/oz)
+//   scale=2: 2-decimal (USD/RUB ≈ 71.49)
+//   scale=4: 4-decimal (EUR/USD ≈ 1.1629)
 struct BitcoinData {
-    int price;      // current price in USD (integer)
-    int price_24h_min;   // 24h low
-    int price_24h_max;   // 24h high
-    int price_24h_change_bps; // 24h change in basis points (0.01% units, e.g., 19 = 0.19%)
-    int price_history[20];  // downsampled samples (oldest first), -1 means no data
-    int history_count;   // how many samples are valid (0-20)
-    bool valid;     // false until first push received
+    char name[12];          // display label, e.g. "BTC/USD", "EUR/USD", "XAU/EUR"
+    char symbol[4];         // currency suffix, e.g. "$", "€", "₽"
+    int  scale;             // decimal places for display (0..4)
+    int  price;             // current price * 10^scale
+    int  price_24h_min;     // period low * 10^scale
+    int  price_24h_max;     // period high * 10^scale
+    int  price_24h_change_bps; // change in basis points (0.01% units)
+    int  price_history[20]; // downsampled history (oldest..newest), each * 10^scale
+    int  history_count;     // how many samples are valid (0-20)
+    bool valid;             // false until first push received
 };

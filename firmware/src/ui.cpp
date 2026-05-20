@@ -103,11 +103,19 @@ static sys_cell_t sc_cpu, sc_ram, sc_disk, sc_temp, sc_gpu, sc_net;
 static lv_obj_t* btc_price_label;
 static lv_obj_t* btc_change_label;
 static lv_obj_t* btc_arrow_label;       // ▲ or ▼ trend indicator
+static lv_obj_t* btc_pair_label;        // dynamic ticker name ("BTC/USD"...)
 static lv_obj_t* btc_chart;
 static lv_chart_series_t* btc_series;
 static lv_obj_t* btc_high_value;        // 6M high
 static lv_obj_t* btc_low_value;         // 6M low
 static lv_obj_t* btc_range_value;       // current position in 6M range (%)
+
+// Tap anywhere on the chart cycles to the next ticker. The daemon listens
+// for {"req":"ticker_next"} on its FD3 reader and pushes the new ticker.
+static void btc_chart_clicked_cb(lv_event_t* e) {
+    (void)e;
+    Serial.println("{\"req\":\"ticker_next\"}");
+}
 
 // ---- Battery indicator + logo (kept for API symmetry; PMU is stubbed) ----
 static lv_obj_t* battery_img;
@@ -526,12 +534,12 @@ static void init_page_bitcoin(lv_obj_t* scr) {
     lv_obj_set_style_text_color(btc_symbol, NEON_DEEP, 0);
     lv_obj_center(btc_symbol);
 
-    // "BITCOIN / USD" label
-    lv_obj_t* lbl_pair = lv_label_create(header);
-    lv_label_set_text(lbl_pair, "BTC/USD");
-    lv_obj_set_style_text_font(lbl_pair, &font_styrene_12, 0);
-    lv_obj_set_style_text_color(lbl_pair, NEON_CYAN, 0);
-    lv_obj_align(lbl_pair, LV_ALIGN_LEFT_MID, 50, -10);
+    // Ticker pair label (dynamic — set by ui_update_bitcoin_data)
+    btc_pair_label = lv_label_create(header);
+    lv_label_set_text(btc_pair_label, "BTC/USD");
+    lv_obj_set_style_text_font(btc_pair_label, &font_styrene_12, 0);
+    lv_obj_set_style_text_color(btc_pair_label, NEON_CYAN, 0);
+    lv_obj_align(btc_pair_label, LV_ALIGN_LEFT_MID, 50, -10);
 
     // Price
     btc_price_label = lv_label_create(header);
@@ -593,6 +601,10 @@ static void init_page_bitcoin(lv_obj_t* scr) {
                        "6M LOW", &btc_low_value, NEON_CYAN);
     make_btc_stat_card(page_bitcoin, MARGIN + 2 * (card_w + card_gap), card_y, card_w,
                        "POSITION", &btc_range_value, BTC_ORANGE);
+
+    // Tap on the chart cycles to the next ticker (BTC/USD → BTC/EUR → ...)
+    lv_obj_add_flag(btc_chart, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(btc_chart, btc_chart_clicked_cb, LV_EVENT_CLICKED, NULL);
 }
 
 // Shared placeholder helper for any future unbuilt page.
@@ -927,15 +939,44 @@ static void format_price_with_commas(int price, char* buf, size_t buflen) {
     buf[out] = '\0';
 }
 
+// Format a scaled integer price (e.g. 11629 with scale=4 → "1.1629",
+// 77000 with scale=0 → "77,000") and prepend/append the currency symbol.
+// Whole part gets thousand separators. Decimal part has exactly `scale`
+// digits.
+static void format_scaled_price(int price, int scale, const char* symbol,
+                                char* out, size_t outlen) {
+    int divisor = 1;
+    for (int i = 0; i < scale; i++) divisor *= 10;
+
+    int whole = price / divisor;
+    int frac  = price - whole * divisor;
+    if (frac < 0) frac = -frac;  // (price could be negative but we don't care for ranges)
+
+    char whole_buf[24];
+    format_price_with_commas(whole, whole_buf, sizeof(whole_buf));
+
+    // Empty symbol → no prefix; the pair label already conveys the currency
+    const char* sym = (symbol && symbol[0]) ? symbol : "";
+    if (scale == 0) {
+        snprintf(out, outlen, "%s%s", sym, whole_buf);
+    } else {
+        snprintf(out, outlen, "%s%s.%0*d", sym, whole_buf, scale, frac);
+    }
+}
+
 void ui_update_bitcoin_data(const BitcoinData* data) {
     if (!data || !data->valid) return;
 
     char buf[48];
     char num_buf[24];
 
-    // ----- Price with thousand separators -----
-    format_price_with_commas(data->price, num_buf, sizeof(num_buf));
-    snprintf(buf, sizeof(buf), "$%s", num_buf);
+    // ----- Ticker name in the pair label (e.g. "BTC/USD", "EUR/USD") -----
+    if (data->name[0]) {
+        lv_label_set_text(btc_pair_label, data->name);
+    }
+
+    // ----- Price with scale-aware formatting + currency symbol -----
+    format_scaled_price(data->price, data->scale, data->symbol, buf, sizeof(buf));
     lv_label_set_text(btc_price_label, buf);
 
     // ----- 24h change with arrow indicator -----
@@ -972,12 +1013,11 @@ void ui_update_bitcoin_data(const BitcoinData* data) {
     if (data->price_24h_max > max_price) max_price = data->price_24h_max;
 
     // ----- Update stat cards (HIGH / LOW / POSITION) -----
-    format_price_with_commas(max_price, num_buf, sizeof(num_buf));
-    snprintf(buf, sizeof(buf), "$%s", num_buf);
+    (void)num_buf;
+    format_scaled_price(max_price, data->scale, data->symbol, buf, sizeof(buf));
     lv_label_set_text(btc_high_value, buf);
 
-    format_price_with_commas(min_price, num_buf, sizeof(num_buf));
-    snprintf(buf, sizeof(buf), "$%s", num_buf);
+    format_scaled_price(min_price, data->scale, data->symbol, buf, sizeof(buf));
     lv_label_set_text(btc_low_value, buf);
 
     // POSITION: where in the 6M range is the current price (0% = at low, 100% = at high)

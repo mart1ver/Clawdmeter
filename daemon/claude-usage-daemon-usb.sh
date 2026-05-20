@@ -38,17 +38,6 @@ PREV_NET_TX=0
 PREV_NET_TIME_MS=0
 LAST_SYS_PUSH=0
 
-# Bitcoin price history: 180 daily samples (ring buffer, 6 months of data)
-declare -a BTC_HISTORY
-BTC_HISTORY_IDX=0
-BTC_CURRENT_PRICE=0
-BTC_24H_MIN=0
-BTC_24H_MAX=0
-BTC_24H_CHANGE=0
-LAST_BTC_POLL=0
-LAST_BTC_DAY=0
-BTC_CACHE_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/claude-btc-history.json"
-
 CPU_PCT=0
 # Delta-based — sets global CPU_PCT (NOT echoed) so PREV_CPU_* persist
 # across calls. Calling via cpu=$(read_cpu_pct) would run in a subshell
@@ -240,194 +229,265 @@ read_net_kbps() {
     NET_KBPS=$(( ( (d_rx + d_tx) * 1000 ) / (1024 * d_t) ))
 }
 
-read_bitcoin_price() {
-    # Fetch Bitcoin current price from CoinGecko API (free, no auth required).
-    # Returns: price change24_bps (price in USD; change24_bps as basis points, e.g., 19 for 0.19%)
-    local json
-    json=$(curl -s "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_market_cap=false&include_24hr_vol=false&include_24hr_change=true&include_market_cap_change_24h=false" 2>/dev/null) || return 1
+# ============================================================================
+# Tickers — generic financial-instrument quotes (forex, crypto, metals)
+# ============================================================================
+# Tap on the Bitcoin tab's chart cycles through TICKER_IDS (see start_reader
+# below for the "ticker_next" message). Each ticker has a cache file at
+# ~/.cache/clawdmeter-ticker-<id>.json (one scaled-integer price per line).
 
-    local price change24_pct
-    price=$(echo "$json" | grep -o '"usd":[^,}]*' | head -1 | cut -d':' -f2)
-    change24_pct=$(echo "$json" | grep -o '"usd_24h_change":[^,}]*' | cut -d':' -f2)
+TICKER_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}"
+TICKER_CACHE_TTL=86400      # seconds (24h)
+TICKER_SWITCH_FLAG="${XDG_RUNTIME_DIR:-/tmp}/clawd-ticker-next"
 
-    # Parse price as integer.
-    price=$(echo "$price" | awk '{printf "%.0f", $1}')
+# Cycle order. Append more IDs here to add tickers.
+TICKER_IDS=(btc_usd btc_eur btc_rub eur_usd usd_eur eur_rub rub_eur usd_rub rub_usd xau_eur xag_eur)
 
-    # Parse change24 in basis points (multiply % by 100, so 0.19% becomes 19 bps).
-    change24_pct=$(echo "$change24_pct" | awk '{printf "%.0f", $1 * 100}')
+# Per-ticker metadata (name shown in header / price decimal scale).
+# Symbol = ASCII prefix on the price; empty when the pair name already
+# communicates the currency unambiguously.
+declare -A TICKER_NAME=(
+    [btc_usd]="BTC/USD" [btc_eur]="BTC/EUR" [btc_rub]="BTC/RUB"
+    [eur_usd]="EUR/USD" [usd_eur]="USD/EUR" [eur_rub]="EUR/RUB" [rub_eur]="RUB/EUR"
+    [usd_rub]="USD/RUB" [rub_usd]="RUB/USD"
+    [xau_eur]="GOLD/EUR" [xag_eur]="SILVER/EUR"
+)
+declare -A TICKER_SYMBOL=(
+    [btc_usd]="\$"  [btc_eur]=""   [btc_rub]=""
+    [eur_usd]="\$"  [usd_eur]=""   [eur_rub]=""   [rub_eur]=""
+    [usd_rub]=""   [rub_usd]="\$"
+    [xau_eur]=""   [xag_eur]=""
+)
+# Decimal scale: digits after the point. Price is sent as integer * 10^scale.
+declare -A TICKER_SCALE=(
+    [btc_usd]=0 [btc_eur]=0 [btc_rub]=0
+    [eur_usd]=4 [usd_eur]=4 [eur_rub]=2 [rub_eur]=4
+    [usd_rub]=2 [rub_usd]=4
+    [xau_eur]=0 [xag_eur]=2
+)
 
-    [ -z "$price" ] && return 1
-    [ -z "$change24_pct" ] && change24_pct=0
+ACTIVE_TICKER="btc_usd"
+ACTIVE_TICKER_IDX=0
+declare -a TICKER_HISTORY    # ring buffer of up to 180 scaled prices
+TICKER_HISTORY_IDX=0
+TICKER_CURRENT=0
+TICKER_MIN=0
+TICKER_MAX=0
+TICKER_CHANGE_BPS=0
+LAST_TICKER_PUSH_DAY=""
 
-    echo "$price" "$change24_pct"
-}
+ticker_cache_file() { echo "$TICKER_CACHE_DIR/clawdmeter-ticker-$1.json"; }
 
-read_bitcoin_history() {
-    # Fetch Bitcoin daily prices for the last 180 days.
-    # Returns one price per line (oldest first).
-    local json
-    json=$(curl -s "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=180&interval=daily" 2>/dev/null) || return 1
-
-    # Extract from "prices":[ array using sed, then parse [timestamp,price] pairs
-    # Each pair looks like: [1234567890000,95000.123]
-    # We want just the price (second number)
+# Fetch 180 days of BTC prices in `vs_currency`, scaled by 10^scale.
+# Echos one price per line (oldest first).
+fetch_coingecko_btc_history() {
+    local vs="$1" scale="$2" json
+    json=$(curl -s "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=${vs}&days=180&interval=daily" 2>/dev/null) || return 1
     echo "$json" | sed 's/"prices":\[\[//' | sed 's/\]\],"market_caps".*//' | \
-    grep -o '\[[0-9]*,[0-9]*\.[0-9]*\]' | \
-    sed 's/\[[0-9]*,\([0-9]*\)\.[0-9]*\]/\1/'
+        grep -o '\[[0-9]*,[0-9.]*\]' | \
+        awk -v s="$scale" '
+            BEGIN { mul = 1; for (i=0; i<s; i++) mul *= 10 }
+            { gsub(/[\[\]]/, "")
+              split($0, p, ",")
+              printf "%.0f\n", p[2] * mul }'
 }
 
-# Try fetching fresh 180-day history from CoinGecko API. Populates the ring
-# buffer + writes a fresh cache file. Returns 0 on success, 1 on API failure.
-btc_fetch_from_api() {
-    log "Bitcoin: fetching 180 days of history from CoinGecko API..."
-    local prices
-    prices=$(read_bitcoin_history) || { log "Bitcoin history fetch failed (rate limit?)"; return 1; }
+# Fetch a Yahoo Finance daily history (6mo). Echos scaled integer prices.
+fetch_yahoo_history() {
+    local sym="$1" scale="$2"
+    curl -sL -A "Mozilla/5.0" \
+        "https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=6mo" \
+        2>/dev/null | \
+    python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    r = d['chart']['result'][0]
+    closes = r['indicators']['quote'][0]['close']
+    mul = 10 ** int(sys.argv[1])
+    for c in closes:
+        if c is not None:
+            print(int(round(c * mul)))
+except Exception:
+    sys.exit(1)
+" "$scale" 2>/dev/null
+}
 
-    # Atomically replace the cache file
-    local tmp="$BTC_CACHE_FILE.tmp"
-    : > "$tmp"
-    local count=0
-    BTC_24H_MIN=0
-    BTC_24H_MAX=0
+# Fetch XAU or XAG priced in EUR by combining Yahoo's USD price with EUR/USD.
+fetch_yahoo_metal_in_eur() {
+    local metal_sym="$1" scale="$2"
+    # USD prices at scale 4 for accuracy during the EUR conversion
+    local usd_prices eur_per_usd
+    usd_prices=$(fetch_yahoo_history "$metal_sym" 4) || return 1
+    eur_per_usd=$(curl -sL -A "Mozilla/5.0" \
+        "https://query1.finance.yahoo.com/v8/finance/chart/EURUSD=X?interval=1d&range=1d" 2>/dev/null | \
+        python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d['chart']['result'][0]['meta']['regularMarketPrice'])
+except:
+    sys.exit(1)
+" 2>/dev/null)
+    [ -z "$eur_per_usd" ] && return 1
+    # eur_price = usd_price / eur_per_usd, rescaled to requested `scale`
+    echo "$usd_prices" | awk -v rate="$eur_per_usd" -v s="$scale" '
+        BEGIN { out_mul = 1; for (i=0; i<s; i++) out_mul *= 10 }
+        { printf "%.0f\n", ($1 / 10000) / rate * out_mul }'
+}
+
+# Dispatch table: fetch the 180-day history for any ticker.
+fetch_ticker_history() {
+    local id="$1" scale="${TICKER_SCALE[$id]:-0}"
+    case "$id" in
+        btc_usd) fetch_coingecko_btc_history usd "$scale" ;;
+        btc_eur) fetch_coingecko_btc_history eur "$scale" ;;
+        btc_rub) fetch_coingecko_btc_history rub "$scale" ;;
+        eur_usd) fetch_yahoo_history "EURUSD=X" "$scale" ;;
+        usd_eur) fetch_yahoo_history "USDEUR=X" "$scale" ;;
+        eur_rub) fetch_yahoo_history "EURRUB=X" "$scale" ;;
+        rub_eur) fetch_yahoo_history "EURRUB=X" "$scale" \
+                   | awk -v s="$scale" 'BEGIN { mul = 1; for (i=0; i<s; i++) mul *= 10 }
+                                        { if ($1 > 0) printf "%.0f\n", (mul * mul) / $1 }' ;;
+        usd_rub) fetch_yahoo_history "USDRUB=X" "$scale" ;;
+        rub_usd) fetch_yahoo_history "RUBUSD=X" "$scale" ;;
+        xau_eur) fetch_yahoo_metal_in_eur "GC=F" "$scale" ;;
+        xag_eur) fetch_yahoo_metal_in_eur "SI=F" "$scale" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Load ticker prices from its cache file into TICKER_HISTORY[].
+ticker_load_from_cache() {
+    local id="$1" cache; cache=$(ticker_cache_file "$id")
+    [ -f "$cache" ] || return 1
+    TICKER_HISTORY=()
+    TICKER_MIN=0; TICKER_MAX=0
+    local count=0 price
     while IFS= read -r price; do
-        [ -z "$price" ] || [ "$price" -eq 0 ] && continue
-        BTC_HISTORY[$count]=$price
+        [ -z "$price" ] || [ "$price" -le 0 ] 2>/dev/null && continue
+        TICKER_HISTORY[$count]=$price
+        if [ $TICKER_MIN -eq 0 ] || [ $price -lt $TICKER_MIN ]; then TICKER_MIN=$price; fi
+        if [ $price -gt $TICKER_MAX ]; then TICKER_MAX=$price; fi
+        (( count++ ))
+        [ $count -ge 180 ] && break
+    done < "$cache"
+    [ $count -eq 0 ] && return 1
+    TICKER_HISTORY_IDX=$count
+    TICKER_CURRENT=${TICKER_HISTORY[$((count-1))]}
+    return 0
+}
+
+# Fetch fresh data via the dispatch table, write to cache, populate globals.
+ticker_fetch_from_api() {
+    local id="$1" cache; cache=$(ticker_cache_file "$id")
+    log "Ticker $id: fetching from network..."
+    local prices
+    prices=$(fetch_ticker_history "$id") || { log "Ticker $id: fetch failed"; return 1; }
+    local tmp="$cache.tmp"
+    : > "$tmp"
+    TICKER_HISTORY=()
+    TICKER_MIN=0; TICKER_MAX=0
+    local count=0 price
+    while IFS= read -r price; do
+        [ -z "$price" ] || [ "$price" -le 0 ] 2>/dev/null && continue
+        TICKER_HISTORY[$count]=$price
         echo "$price" >> "$tmp"
-        if [ $BTC_24H_MIN -eq 0 ] || [ $price -lt $BTC_24H_MIN ]; then BTC_24H_MIN=$price; fi
-        if [ $price -gt $BTC_24H_MAX ]; then BTC_24H_MAX=$price; fi
+        if [ $TICKER_MIN -eq 0 ] || [ $price -lt $TICKER_MIN ]; then TICKER_MIN=$price; fi
+        if [ $price -gt $TICKER_MAX ]; then TICKER_MAX=$price; fi
         (( count++ ))
         [ $count -ge 180 ] && break
     done <<< "$prices"
-
-    if [ $count -lt 30 ]; then
-        log "Bitcoin: API returned too few prices ($count) — keeping old cache"
+    if [ $count -lt 10 ]; then
+        log "Ticker $id: only $count prices — keeping old cache"
         rm -f "$tmp"
         return 1
     fi
-
-    mv "$tmp" "$BTC_CACHE_FILE"
-    BTC_HISTORY_IDX=$count
-    [ -n "${BTC_HISTORY[$((count-1))]}" ] && BTC_CURRENT_PRICE=${BTC_HISTORY[$((count-1))]}
-    log "Bitcoin: loaded $count days from API (min: \$$BTC_24H_MIN, max: \$$BTC_24H_MAX, current: \$$BTC_CURRENT_PRICE)"
+    mv "$tmp" "$cache"
+    TICKER_HISTORY_IDX=$count
+    TICKER_CURRENT=${TICKER_HISTORY[$((count-1))]}
+    log "Ticker $id: $count days loaded, current=$TICKER_CURRENT (min=$TICKER_MIN, max=$TICKER_MAX)"
     return 0
 }
 
-btc_load_from_cache() {
-    [ -f "$BTC_CACHE_FILE" ] || return 1
-    log "Bitcoin: loading history from cache..."
-    local count=0
-    BTC_24H_MIN=0
-    BTC_24H_MAX=0
-    while IFS= read -r price; do
-        [ -z "$price" ] || [ "$price" -eq 0 ] && continue
-        BTC_HISTORY[$count]=$price
-        if [ $BTC_24H_MIN -eq 0 ] || [ $price -lt $BTC_24H_MIN ]; then BTC_24H_MIN=$price; fi
-        if [ $price -gt $BTC_24H_MAX ]; then BTC_24H_MAX=$price; fi
-        (( count++ ))
-        [ $count -ge 180 ] && break
-    done < "$BTC_CACHE_FILE"
-
-    [ $count -eq 0 ] && return 1
-    BTC_HISTORY_IDX=$count
-    [ -n "${BTC_HISTORY[$((count-1))]}" ] && BTC_CURRENT_PRICE=${BTC_HISTORY[$((count-1))]}
-    log "Bitcoin: loaded $count days from cache (min: \$$BTC_24H_MIN, max: \$$BTC_24H_MAX, current: \$$BTC_CURRENT_PRICE)"
-    return 0
+# Prefer fresh API data once per 24h; fall back to cache when API down.
+load_ticker() {
+    local id="$1" cache; cache=$(ticker_cache_file "$id")
+    local cache_age=$TICKER_CACHE_TTL now; now=$(date +%s)
+    if [ -f "$cache" ]; then
+        local mt; mt=$(stat -c %Y "$cache" 2>/dev/null) || mt=0
+        cache_age=$(( now - mt ))
+    fi
+    if (( cache_age < TICKER_CACHE_TTL )); then
+        ticker_load_from_cache "$id" && return 0
+    fi
+    ticker_fetch_from_api "$id" && return 0
+    log "Ticker $id: API unreachable, falling back to stale cache"
+    ticker_load_from_cache "$id"
 }
 
-# One-time initialization: prefer fresh API data; fall back to cache if API
-# fails or cache is still fresh (< 24h old). Avoids hammering CoinGecko on
-# every daemon restart while keeping data current.
-BTC_CACHE_TTL=86400   # seconds — re-fetch when cache is older than this
-init_bitcoin_history() {
-    local now=$(date +%s)
-    local cache_age=$BTC_CACHE_TTL
-    if [ -f "$BTC_CACHE_FILE" ]; then
-        local cache_mtime
-        cache_mtime=$(stat -c %Y "$BTC_CACHE_FILE" 2>/dev/null) || cache_mtime=0
-        cache_age=$(( now - cache_mtime ))
-    fi
-
-    if (( cache_age < BTC_CACHE_TTL )); then
-        log "Bitcoin: cache is $((cache_age/3600))h old, using it (< 24h TTL)"
-        btc_load_from_cache && return 0
-    fi
-
-    # Cache is stale OR missing OR couldn't be loaded → try API
-    btc_fetch_from_api && return 0
-
-    # API failed → fall back to whatever cache we have, even if stale
-    log "Bitcoin: API unreachable, falling back to cache"
-    btc_load_from_cache
+# 24h change = relative delta between the two most recent samples, in basis
+# points (1 bp = 0.01%).
+compute_change_bps() {
+    local n=$TICKER_HISTORY_IDX
+    (( n < 2 )) && { TICKER_CHANGE_BPS=0; return; }
+    local newest=${TICKER_HISTORY[$((n-1))]}
+    local prev=${TICKER_HISTORY[$((n-2))]}
+    [ -z "$newest" ] || [ -z "$prev" ] || (( prev <= 0 )) && { TICKER_CHANGE_BPS=0; return; }
+    TICKER_CHANGE_BPS=$(( ( (newest - prev) * 10000 ) / prev ))
 }
 
-push_bitcoin_if_due() {
-    local now=$(date +%s)
-    local today=$(date +%Y%m%d)
+# Build downsampled-20 history and push to firmware.
+push_ticker() {
+    local id="$ACTIVE_TICKER"
+    [ -z "${TICKER_NAME[$id]}" ] && return 1
+    compute_change_bps
 
-    # Only update daily (once per day at most)
-    if [ "$LAST_BTC_DAY" = "$today" ]; then
-        return 0
-    fi
-    LAST_BTC_DAY="$today"
-
-    # On first run, use current price from cache initialization
-    # On subsequent days, try to fetch new price (but don't fail if API is rate-limited)
-    if [ $BTC_CURRENT_PRICE -eq 0 ]; then
-        # First run: use price 0 as signal to just send history
-        log "Bitcoin: sending initial history data"
+    # Downsample N history entries to 20 evenly-spaced points (oldest first).
+    # Entries are at ring[0..N-1] with N = TICKER_HISTORY_IDX (partial-fill,
+    # no wraparound yet; daemon would need 180 days uptime to wrap).
+    local hist_json="[" count=0 i idx total=$TICKER_HISTORY_IDX
+    (( total > 180 )) && total=180
+    if (( total < 2 )); then
+        hist_json="[$TICKER_CURRENT]"
     else
-        # Daily update: try to fetch new price
-        local price_change
-        price_change=$(read_bitcoin_price) 2>/dev/null
-        if [ -n "$price_change" ]; then
-            local price change24
-            read -r price change24 <<< "$price_change"
-            if [ -n "$price" ] && [ "$price" -gt 0 ]; then
-                BTC_CURRENT_PRICE=$price
-                BTC_24H_CHANGE=$change24
+        for i in {0..19}; do
+            idx=$(( i * (total - 1) / 19 ))
+            if [ -n "${TICKER_HISTORY[$idx]}" ] && [ "${TICKER_HISTORY[$idx]}" -gt 0 ]; then
+                [ $count -gt 0 ] && hist_json="$hist_json,"
+                hist_json="$hist_json${TICKER_HISTORY[$idx]}"
+                (( count++ ))
             fi
-        fi
+        done
+        hist_json="$hist_json]"
     fi
 
-    # Update ring buffer with today's price if we have a new one
-    if [ $BTC_CURRENT_PRICE -gt 0 ]; then
-        BTC_HISTORY[$BTC_HISTORY_IDX]=$BTC_CURRENT_PRICE
-        BTC_HISTORY_IDX=$(( (BTC_HISTORY_IDX + 1) % 180 ))
-
-        # Track min/max over all collected samples.
-        if [ $BTC_24H_MIN -eq 0 ] || [ $BTC_CURRENT_PRICE -lt $BTC_24H_MIN ]; then
-            BTC_24H_MIN=$BTC_CURRENT_PRICE
-        fi
-        if [ $BTC_CURRENT_PRICE -gt $BTC_24H_MAX ]; then
-            BTC_24H_MAX=$BTC_CURRENT_PRICE
-        fi
-    fi
-
-    # Build downsampled history: 180 → 20 points, evenly spaced from oldest
-    # to NEWEST. The previous version used stride=9 which capped at index
-    # 171 and never included the current price → chart looked frozen and
-    # didn't match the displayed "$X" headline.
-    # Formula: i * 179 / 19 (integer math) gives 0, 9, 18, ..., 169, 179
-    # — last sample is index 179 = newest = today's price.
-    local hist_json="["
-    local count=0
-    for i in {0..19}; do
-        local src_offset=$(( i * 179 / 19 ))
-        local idx=$(( (BTC_HISTORY_IDX + src_offset) % 180 ))
-        if [ -n "${BTC_HISTORY[$idx]}" ] && [ "${BTC_HISTORY[$idx]}" -gt 0 ]; then
-            [ $count -gt 0 ] && hist_json="$hist_json,"
-            hist_json="$hist_json${BTC_HISTORY[$idx]}"
-            (( count++ ))
-        fi
-    done
-    hist_json="$hist_json]"
-
+    local name="${TICKER_NAME[$id]}"
+    local sym="${TICKER_SYMBOL[$id]}"
+    local scl="${TICKER_SCALE[$id]:-0}"
     local payload
-    payload=$(printf '{"btc":{"price":%d,"min24":%d,"max24":%d,"change24":%d,"history":%s}}' \
-        "$BTC_CURRENT_PRICE" "$BTC_24H_MIN" "$BTC_24H_MAX" "$BTC_24H_CHANGE" "$hist_json")
+    payload=$(printf '{"btc":{"name":"%s","sym":"%s","scl":%d,"price":%d,"min24":%d,"max24":%d,"change24":%d,"history":%s}}' \
+        "$name" "$sym" "$scl" "$TICKER_CURRENT" "$TICKER_MIN" "$TICKER_MAX" "$TICKER_CHANGE_BPS" "$hist_json")
 
-    log "Bitcoin: \$$BTC_CURRENT_PRICE (24h: $BTC_24H_CHANGE), history: $count days"
+    log "Ticker $id [$name]: $TICKER_CURRENT (24h: $TICKER_CHANGE_BPS bps, history: $count pts)"
     send_line "$payload" || return 1
+}
+
+# Advance ACTIVE_TICKER → next in TICKER_IDS, load, push.
+switch_to_next_ticker() {
+    ACTIVE_TICKER_IDX=$(( (ACTIVE_TICKER_IDX + 1) % ${#TICKER_IDS[@]} ))
+    ACTIVE_TICKER="${TICKER_IDS[$ACTIVE_TICKER_IDX]}"
+    log "→ Switching ticker to $ACTIVE_TICKER"
+    load_ticker "$ACTIVE_TICKER" || { log "Failed to load $ACTIVE_TICKER"; return 1; }
+    push_ticker
+}
+
+# Daily refresh of the active ticker.
+push_ticker_if_due() {
+    local today; today=$(date +%Y%m%d)
+    [ "$LAST_TICKER_PUSH_DAY" = "$today" ] && return 0
+    LAST_TICKER_PUSH_DAY="$today"
+    push_ticker
 }
 
 push_system_stats_if_due() {
@@ -558,15 +618,19 @@ ACTIONS_DIR="$HOME/.config/clawdmeter"
 
 # Spawn a child shell that reads firmware → host lines on FD 3 (inherited).
 # Two firmware → host message types:
-#   {"req":"poll"}   → touch $REQ_FLAG (main loop forces an API poll)
-#   {"action":N}     → fork-and-run $ACTIONS_DIR/actionN.sh in background
+#   {"req":"poll"}        → touch $REQ_FLAG (main loop forces an API poll)
+#   {"req":"ticker_next"} → touch $TICKER_SWITCH_FLAG (main loop cycles ticker)
+#   {"action":N}          → fork-and-run $ACTIONS_DIR/actionN.sh in background
 start_reader() {
-    rm -f "$REQ_FLAG"
+    rm -f "$REQ_FLAG" "$TICKER_SWITCH_FLAG"
     bash -c "
         while IFS= read -r l; do
             case \"\$l\" in
                 *'\"req\":\"poll\"'*)
                     touch '$REQ_FLAG'
+                    ;;
+                *'\"req\":\"ticker_next\"'*)
+                    touch '$TICKER_SWITCH_FLAG'
                     ;;
                 *'\"action\":'*)
                     n=\$(echo \"\$l\" | grep -oE '\"action\":[0-9]+' | grep -oE '[0-9]+')
@@ -688,7 +752,7 @@ LAST_API_POLL=0
 LAST_SETTINGS_MTIME=0   # mtime of settings.json — shared by model+effort watch
 LAST_MODEL=""
 LAST_EFFORT=""
-BTC_HISTORY_INIT=0      # Flag: have we fetched 180 days of Bitcoin history?
+TICKER_INIT=0           # Flag: have we loaded the active ticker yet?
 
 # Push partial JSON when model or effort changes. Two different cadences:
 #   • Model lives in settings.json → watched via mtime (cheap, instant)
@@ -744,12 +808,11 @@ while true; do
         LAST_SETTINGS_MTIME=0
         LAST_MODEL=""
         LAST_EFFORT=""
-        # Force re-push of Bitcoin data on reconnect (firmware may have rebooted).
-        LAST_BTC_DAY=0
-        # Initialize Bitcoin history once at startup.
-        if [ $BTC_HISTORY_INIT -eq 0 ]; then
-            init_bitcoin_history
-            BTC_HISTORY_INIT=1
+        # Force re-push of active ticker on reconnect (firmware may have rebooted).
+        LAST_TICKER_PUSH_DAY=""
+        # Initialize the active ticker once at startup.
+        if [ $TICKER_INIT -eq 0 ]; then
+            load_ticker "$ACTIVE_TICKER" && TICKER_INIT=1
         fi
     fi
 
@@ -769,7 +832,7 @@ while true; do
         close_port; DEVICE_PORT=""; sleep 5; continue
     }
 
-    push_bitcoin_if_due || {
+    push_ticker_if_due || {
         close_port; DEVICE_PORT=""; sleep 5; continue
     }
 
@@ -778,8 +841,14 @@ while true; do
         rm -f "$REQ_FLAG"
         log "Firmware requested immediate poll"
         LAST_API_POLL=0
-        # Also re-push Bitcoin data — firmware likely just booted
-        LAST_BTC_DAY=0
+        # Also re-push ticker data — firmware likely just booted
+        LAST_TICKER_PUSH_DAY=""
+    fi
+
+    # Firmware tapped on the chart → cycle to the next ticker
+    if [ -f "$TICKER_SWITCH_FLAG" ]; then
+        rm -f "$TICKER_SWITCH_FLAG"
+        switch_to_next_ticker || true
     fi
 
     now=$(date +%s)
